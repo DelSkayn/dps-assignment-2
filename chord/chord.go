@@ -1,104 +1,69 @@
 package chord
 
 import (
-	"bytes"
-	"crypto/sha1"
-	"encoding/gob"
 	"fmt"
-	"math"
-	"math/bits"
 	"net"
+	"sort"
+
+	log "github.com/sirupsen/logrus"
 )
 
-type Config struct {
-	bootstrap []string
-	maxPeers  uint64
-	host      string
-}
+// Key The key type of a node.
+type Key [32]byte
 
-func ConfigBuilder() Config {
-	return Config{
-		bootstrap: nil,
-		maxPeers:  math.MaxUint64,
-		host:      "localhost:8080",
+func Less(a, b Key) bool {
+	for i := 0; i < 32; i++ {
+		if a[i] < b[i] {
+			return true
+		}
+		if a[i] > b[i] {
+			return false
+		}
 	}
+	return false
 }
 
-func (cfg *Config) BootstrapAddr(addr string) *Config {
-	cfg.bootstrap = append(cfg.bootstrap, addr)
-	return cfg
+type Nodes []*Node
+
+func (a Nodes) Len() int           { return len(a) }
+func (a Nodes) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a Nodes) Less(i, j int) bool { return Less(a[i].nodeID, a[j].nodeID) }
+
+type KeyUpdate struct {
+	lost bool
+	key  Key
 }
 
-func (cfg *Config) MaxPeers(maxPeers uint64) *Config {
-	cfg.maxPeers = maxPeers
-	return cfg
+// Chord main struct handling the protocol
+type Chord struct {
+	nodes      Nodes
+	keyUpdates *chan KeyUpdate
 }
-
-func (cfg *Config) Host(host string) *Config {
-	cfg.host = host
-	return cfg
-}
-
-type FingerEntry struct {
-	nodeId  uint64
-	address net.Addr
-}
-
-type FingerTable struct {
-	entries    []*FingerEntry
-	prev       FingerEntry
-	successors []*FingerEntry
-}
-
-type Node struct {
-	table FingerTable
-}
-
-func hashAddr(addr net.IPAddr) uint64 {
-	var b bytes.Buffer
-	gob.NewEncoder(&b).Encode(addr)
-	hasher := sha1.New()
-	hasher.Write(b.Bytes())
-	hasher.Sum64
-}
-
 
 // Run start the chord node
-func Run(cfg Config) error {
-	addr, err := net.ResolveIPAddr("tcp", cfg.host)
+func Run(cfg Config) (*Chord, error) {
+	log.Info("Initializing chord swarm on: ", cfg.host)
+	addr, err := net.ResolveTCPAddr("", cfg.host)
 	if err != nil {
-		fmt.Println("failed to resolve hostname:" + cfg.host)
-		return fmt.Errorf("failed to resolve hostname", err)
+		return nil, fmt.Errorf("failed to resolve host name: %v", err)
+	}
+	log.Trace("Resolved host to: ", addr)
+
+	nodes := Nodes{}
+	for i := uint32(0); i < cfg.numVirtualNodes; i++ {
+		nodes = append(nodes, NewNode(&cfg, i, addr))
 	}
 
-	numFingers := bits.Len64(cfg.maxPeers)
-	id := hashAddr(addr)
+	sort.Sort(nodes)
 
-	var fingerTable
-	if len(cfg.bootstrap) == 0 {
-		for _, finger := range numFin {
-			fingerTable = append(fingerTable,FingerEntry{
-				nodeId: id,
-				address: addr
-			})
-		}
-	}else{
-		for _, finger := range numFin {
-			fingerTable = append(nil)
-		}
-
-	}
-
-	ln, err := net.ListenIP("tcp", addr)
-	if err != nil {
-		return err
-	}
-	for {
-		conn, err := ln.Accept()
-		fmt.Println("Incomming connection!")
-		if err != nil {
-			return err
-		}
-		go handleIncomming(conn)
-	}
+	return nil, nil
 }
+
+func (chord *Chord) Resolve(key Key) *FingerEntry {
+	pred := sort.Search(len(chord.nodes), func(i int) bool {
+		Less(chord.nodes[i].nodeID, key)
+	})
+	return chord.nodes[pred].Resolve(key)
+}
+
+func (chord *Chord) Dial(nodeID Key, addr net.Addr) chan
