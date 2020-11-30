@@ -1,93 +1,100 @@
 package chord
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/gob"
+	"fmt"
 	"net"
 	"sort"
-
-	log "github.com/sirupsen/logrus"
 )
 
-// FingerEntry An entrie in the finger table
-type FingerEntry struct {
-	// The hash of the node id
-	nodeID [32]byte
-	// The address of the node
-	address *net.TCPAddr
+type ChordNode struct {
+	nodes Nodes
 }
 
-type FingerEntries []*FingerEntry
+func NewNode(cfg *Config, addr *net.TCPAddr) *ChordNode {
+	res := new(ChordNode)
 
-func (a FingerEntries) Len() int           { return len(a) }
-func (a FingerEntries) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a FingerEntries) Less(i, j int) bool { return a[i].nodeID < a[j].nodeID }
-
-// FingerTable The finger table containing the addresses of other nodes
-type FingerTable struct {
-	entries    FingerEntries
-	previous   *FingerEntry
-	successors []*FingerEntry
-}
-
-// Node A single virtual node
-type Node struct {
-	table FingerTable
-	// The hash of the current nodes id
-	nodeID Key
-	// The virtual Id of the node
-	virtualID uint32
-	cfg       *Config
-}
-
-func createID(virtualID uint32, addr *net.TCPAddr) Key {
-	var b bytes.Buffer
-	gob.NewEncoder(&b).Encode(addr)
-	b.WriteByte(byte(0xff & virtualID))
-	b.WriteByte(byte(0xff & (virtualID >> 8)))
-	b.WriteByte(byte(0xff & (virtualID >> 16)))
-	b.WriteByte(byte(0xff & (virtualID >> 24)))
-	hasher := sha256.New()
-	hasher.Write(b.Bytes())
-	res := hasher.Sum(nil)
-	if len(res) != 32 {
-		log.Panic("invalid size hash")
+	nodes := Nodes{}
+	for i := uint32(0); i < cfg.numVirtualNodes; i++ {
+		nodes = append(nodes, NewVirtualNode(cfg, i, addr))
 	}
-	buf := [32]byte{}
-	copy(buf[:], res)
-	return buf
-}
+	sort.Sort(nodes)
+	res.nodes = nodes
 
-// NewNode create a new virtual node
-func NewNode(cfg *Config, virtualID uint32, addr *net.TCPAddr) *Node {
-	nodeID := createID(virtualID, addr)
-	log.Trace("Starting virtual node %v with id %x.", virtualID, nodeID)
-
-	entries := {}
-	if len(cfg.bootstrap) == 0 {
-		entries = append(entries, &FingerEntry{
-			nodeID:  nodeID,
-			address: addr,
-		})
-	}
-
-	res := new(Node)
-	res.table = FingerTable{
-		entries:    entries,
-		previous:   nil,
-		successors: nil,
-	}
-	res.nodeID = nodeID
-	res.virtualID = virtualID
-	res.cfg = cfg
 	return res
 }
 
-func (node *Node) Resolve(key Key) *FingerEntry,error {
-	log.Panic("todo")
-	predecessor := sort.Search(len(node.table.entries), func(i int) bool{
-		Less(node.table.entries[i].nodeID,key)
+func (node *ChordNode) findVirtualNode(nodeID *Key) (*VirtualNode, error) {
+	idx := sort.Search(len(node.nodes), func(i int) bool {
+		return node.nodes[i].nodeID.LessEqual(nodeID)
 	})
-	return nil,nil
+	if !node.nodes[idx].nodeID.Equal(nodeID) {
+		return nil, fmt.Errorf("Could not find node with address at address")
+	}
+	return node.nodes[idx], nil
+}
+
+type Empty struct{}
+
+type Args struct {
+	nodeID Key
+}
+
+func (node *ChordNode) Predecessor(args *Args, res *FingerEntry) error {
+	vNode, err := node.findVirtualNode(&args.nodeID)
+	if err != nil {
+		return err
+	}
+	vNode.lock.Lock()
+	res = vNode.table.previous
+	vNode.lock.Unlock()
+	return nil
+}
+
+func (node *ChordNode) Successor(args *Args, res *FingerEntry) error {
+	vNode, err := node.findVirtualNode(&args.nodeID)
+	if err != nil {
+		return err
+	}
+	vNode.lock.Lock()
+	res = vNode.table.successors[0]
+	vNode.lock.Unlock()
+	return nil
+}
+
+type NotifyArgs struct {
+	nodeID   Key
+	previous FingerEntry
+}
+
+func (node *ChordNode) Notify(args *NotifyArgs, res *Empty) error {
+	vNode, err := node.findVirtualNode(&args.nodeID)
+	if err != nil {
+		return err
+	}
+	vNode.lock.Lock()
+	if vNode.table.previous == nil || (!vNode.table.previous.nodeID.LessEqual(&args.nodeID) && vNode.nodeID.Less(&args.nodeID)) {
+		vNode.table.previous.address = args.previous.address
+		vNode.table.previous.nodeID = args.previous.nodeID
+	}
+	vNode.lock.Unlock()
+	return nil
+}
+
+// FindPredecessorArgs Arguments to the FindClosestPredecessor function
+type FindPredecessorArgs struct {
+	// The node to find the key on
+	nodeID Key
+	// The key to look for
+	find Key
+}
+
+func (node *ChordNode) FindClosestPredecessor(args *FindPredecessorArgs, res *FingerEntry) error {
+	vNode, err := node.findVirtualNode(&args.nodeID)
+	if err != nil {
+		return err
+	}
+	vNode.lock.Lock()
+	res = vNode.ClosestPrecedingFinger(args.find)
+	vNode.lock.Unlock()
+	return nil
 }
