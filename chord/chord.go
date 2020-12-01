@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/rpc"
+	"os"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -39,19 +40,61 @@ func handleRequests(incomming *net.TCPListener, server *rpc.Server) {
 	}
 }
 
+func initializeLogger() {
+	env := os.Getenv("CHORD_LOG")
+	switch env {
+	case "TRACE":
+		log.SetLevel(log.TraceLevel)
+	case "trace":
+		log.SetLevel(log.TraceLevel)
+	case "DEBUG":
+		log.SetLevel(log.DebugLevel)
+	case "debug":
+		log.SetLevel(log.DebugLevel)
+	case "INFO":
+		log.SetLevel(log.InfoLevel)
+	case "info":
+		log.SetLevel(log.InfoLevel)
+	case "WARN":
+		log.SetLevel(log.WarnLevel)
+	case "warn":
+		log.SetLevel(log.WarnLevel)
+	case "ERROR":
+		log.SetLevel(log.ErrorLevel)
+	case "error":
+		log.SetLevel(log.ErrorLevel)
+	case "FATAL":
+		log.SetLevel(log.FatalLevel)
+	case "fatal":
+		log.SetLevel(log.FatalLevel)
+	case "PANIC":
+		log.SetLevel(log.PanicLevel)
+	case "panic":
+		log.SetLevel(log.PanicLevel)
+	}
+}
+
 // Run start the chord node
 func Run(cfg Config) (*Chord, error) {
-	log.Info("Initializing chord swarm on: ", cfg.host)
+	initializeLogger()
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	log.WithFields(log.Fields{
+		"host": cfg.host,
+	}).Info("Initializing chord swarm")
 
 	addr, err := net.ResolveTCPAddr("", cfg.host)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve host name: %v", err)
 	}
-	log.Trace("Resolved host to: ", addr)
+	log.WithFields(log.Fields{
+		"resolvedHost": addr,
+	}).Trace("Resolved host")
 
 	node := NewNode(&cfg, addr)
 
-	socket, err := net.ListenTCP("", addr)
+	socket, err := net.ListenTCP("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket: %v", err)
 	}
@@ -67,11 +110,22 @@ func Run(cfg Config) (*Chord, error) {
 	res.keyUpdates = new(chan KeyUpdate)
 	res.addr = addr
 
+	if cfg.bootstrap != nil {
+		bootstrap, err := net.ResolveTCPAddr("", *cfg.bootstrap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve bootstrap addres: %v", err)
+		}
+		go res.node.bootstrap(res, bootstrap)
+	} else {
+		log.Info("No bootstrap address, initializing as first node in the network.")
+		res.node.initialize(res.addr)
+	}
+
 	return res, nil
 }
 
 func (chord *Chord) connect(to *FingerEntry) (*rpc.Client, error) {
-	conn, err := net.DialTCP("", nil, to.address)
+	conn, err := net.DialTCP("tcp", nil, to.address)
 	if err != nil {
 		return nil, err
 	}

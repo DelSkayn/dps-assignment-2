@@ -3,15 +3,17 @@ package chord
 import (
 	"bytes"
 	"crypto/sha1"
-	"encoding/binary"
 	"encoding/gob"
+	"math/big"
 	"net"
+)
 
-	log "github.com/sirupsen/logrus"
+const (
+	maxFingers = sha1.BlockSize * 8
 )
 
 type Key struct {
-	inner uint64
+	inner big.Int
 }
 
 type KeyRange struct {
@@ -29,29 +31,38 @@ func CreateKey(addr *net.TCPAddr, virtualID uint32) Key {
 	hasher := sha1.New()
 	hasher.Write(b.Bytes())
 	hash := hasher.Sum(nil)
-	if len(hash) != 8 {
-		log.Panic("invalid size hash")
-	}
-	res := binary.LittleEndian.Uint64(hash)
+	res := big.Int{}
+	res.SetBytes(hash)
 	return Key{
 		inner: res,
 	}
 }
 
+func (a *Key) Next(k uint) Key {
+	slice := make([]byte, sha1.BlockSize)
+	for i := 0; i < len(slice); i++ {
+		slice[i] = 0xff
+	}
+	mod := big.NewInt(0).SetBytes(slice)
+	offset := big.NewInt(2)
+	offset.Lsh(offset, k)
+	res := offset.Add(&a.inner, offset)
+	return Key{
+		inner: *res.And(res, mod),
+	}
+}
+
 func (a *Key) Less(b *Key) bool {
-	return a.inner < b.inner
+	return a.inner.Cmp(&b.inner) == -1
 }
 
 func (a *Key) LessEqual(b *Key) bool {
-	return a.inner <= b.inner
+	cmp := a.inner.Cmp(&b.inner)
+	return cmp == -1 || cmp == 0
 }
 
 func (a *Key) Equal(b *Key) bool {
-	return a.inner == b.inner
-}
-
-func (a *Key) Mod(m uint64) uint64 {
-	return a.inner % m
+	return a.inner.Cmp(&b.inner) == 0
 }
 
 func (a *Key) to(b *Key) KeyRange {
@@ -62,10 +73,10 @@ func (a *Key) to(b *Key) KeyRange {
 }
 
 func (a *Key) in(b *KeyRange) bool {
-	if b.from.inner < b.to.inner {
-		return b.from.inner <= a.inner && a.inner <= b.to.inner
+	if b.from.Less(&b.to) {
+		return b.from.Less(a) && a.LessEqual(&b.to)
 	} else {
-		return b.from.inner >= a.inner || a.inner >= b.to.inner
+		return a.Less(&b.from) || b.to.LessEqual(a)
 	}
 }
 

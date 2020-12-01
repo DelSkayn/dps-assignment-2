@@ -19,7 +19,7 @@ type FingerEntries []*FingerEntry
 
 func (a FingerEntries) Len() int           { return len(a) }
 func (a FingerEntries) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a FingerEntries) Less(i, j int) bool { return a[i].nodeID < a[j].nodeID }
+func (a FingerEntries) Less(i, j int) bool { return a[i].nodeID.Less(&a[j].nodeID) }
 
 // FingerTable The finger table containing the addresses of other nodes
 type FingerTable struct {
@@ -44,16 +44,12 @@ type VirtualNode struct {
 // NewNode create a new virtual node
 func NewVirtualNode(cfg *Config, virtualID uint32, addr *net.TCPAddr) *VirtualNode {
 	nodeID := CreateKey(addr, virtualID)
-	log.Trace("Starting virtual node %v with id %x.", virtualID, nodeID)
+	log.WithFields(log.Fields{
+		"virtualId": virtualID,
+		"id":        nodeID.inner.String(),
+	}).Trace("Starting virtual node")
 
 	entries := []*FingerEntry{}
-	if len(cfg.bootstrap) == 0 {
-		entries = append(entries, &FingerEntry{
-			nodeID:  nodeID,
-			address: addr,
-		})
-	}
-
 	res := new(VirtualNode)
 	res.table = FingerTable{
 		entries:    entries,
@@ -78,4 +74,14 @@ func (vnode *VirtualNode) ClosestPrecedingFinger(nodeID Key) *FingerEntry {
 	res.nodeID = vnode.nodeID
 	res.address = vnode.addr
 	return res
+}
+
+func (vnode *VirtualNode) SetSuccessor(entry *FingerEntry, i int) {
+	if i == 0 {
+		vnode.table.entries[0] = entry
+	}
+	for len(vnode.table.entries) <= i {
+		vnode.table.entries = append(vnode.table.entries, nil)
+	}
+	vnode.table.successors[i] = entry
 }

@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 type ChordNode struct {
@@ -21,6 +24,71 @@ func NewNode(cfg *Config, addr *net.TCPAddr) *ChordNode {
 	res.nodes = nodes
 
 	return res
+}
+
+// Initialize the virtual nodes as a single local network.
+func (node *ChordNode) initialize(addr *net.TCPAddr) {
+	log.Info("Initializing virtual nodes")
+	len := uint64(node.nodes.Len())
+	for i := uint64(0); i < len; i++ {
+		cur := node.nodes[i]
+		next := node.nodes[(i+1)%len]
+		cur.lock.Lock()
+		cur.table.entries = append(cur.table.entries, &FingerEntry{
+			address: next.addr,
+			nodeID:  next.nodeID,
+		})
+
+		ran := cur.nodeID.to(&next.nodeID)
+
+		for i := uint64(0); i < maxFingers; i++ {
+			nextKey := cur.nodeID.Next(uint(i))
+			if !nextKey.in(&ran) {
+				idx := sort.Search(node.nodes.Len(), func(j int) bool {
+					searchIdx := (uint64(j) + i) % len
+					return node.nodes[searchIdx].nodeID.in(&ran)
+				})
+				idx = (idx + 1) % node.nodes.Len()
+				cur.table.entries = append(cur.table.entries, &FingerEntry{
+					address: addr,
+					nodeID:  node.nodes[idx].nodeID,
+				})
+				ran.to = node.nodes[idx].nodeID
+			}
+		}
+		cur.table.successors = append(cur.table.successors, cur.table.entries[0])
+		log.WithFields(log.Fields{
+			"entries":   fmt.Sprintf("%+v", cur.table),
+			"virtualId": i,
+		}).Debug("initialized virtual node")
+		// Find the successor in the current nodes
+		cur.lock.Unlock()
+	}
+}
+
+func (node *ChordNode) bootstrap(chord *Chord, bootstrap *net.TCPAddr) {
+	key := CreateKey(bootstrap, 0)
+	finger := new(FingerEntry)
+	finger.address = bootstrap
+	finger.nodeID = key
+	for i := 0; i < len(node.nodes); i++ {
+		node.bootstrapSuccessor(chord, finger, i)
+	}
+}
+
+func (node *ChordNode) bootstrapSuccessor(chord *Chord, finger *FingerEntry, i int) {
+	successor, err := chord.FindSuccessor(finger, node.nodes[i].nodeID)
+	if err != nil {
+		log.Warn("Failed to bootstrap virtualnode %v: %v", i, err)
+		go (func() {
+			time.Sleep(100 * time.Millisecond)
+			log.Info("Retrying to bootstrap virtual node %v", i)
+			node.bootstrapSuccessor(chord, finger, i)
+		})()
+	}
+	node.nodes[i].lock.Lock()
+	node.nodes[i].SetSuccessor(successor, 0)
+	node.nodes[i].lock.Unlock()
 }
 
 func (node *ChordNode) findVirtualNode(nodeID *Key) (*VirtualNode, error) {
