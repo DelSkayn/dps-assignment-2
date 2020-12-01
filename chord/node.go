@@ -32,31 +32,22 @@ func (node *ChordNode) initialize(addr *net.TCPAddr) {
 	len := uint64(node.nodes.Len())
 	for i := uint64(0); i < len; i++ {
 		cur := node.nodes[i]
-		next := node.nodes[(i+1)%len]
 		cur.lock.Lock()
-		cur.table.entries = append(cur.table.entries, &FingerEntry{
-			address: next.addr,
-			nodeID:  next.nodeID,
-		})
-
-		ran := cur.nodeID.to(&next.nodeID)
-
-		for i := uint64(0); i < maxFingers; i++ {
-			nextKey := cur.nodeID.Next(uint(i))
-			if !nextKey.in(&ran) {
-				idx := sort.Search(node.nodes.Len(), func(j int) bool {
-					searchIdx := (uint64(j) + i) % len
-					return node.nodes[searchIdx].nodeID.in(&ran)
-				})
-				idx = (idx + 1) % node.nodes.Len()
-				cur.table.entries = append(cur.table.entries, &FingerEntry{
-					address: addr,
-					nodeID:  node.nodes[idx].nodeID,
-				})
-				ran.to = node.nodes[idx].nodeID
+		ran := cur.nodeID.to(&cur.nodeID)
+		for j := uint64(0); j < maxFingers; j++ {
+			findKey := cur.nodeID.Next(uint(j))
+			ran.to = findKey
+			k := uint64(0)
+			idx := (i + k) % uint64(node.nodes.Len())
+			for node.nodes[idx].nodeID.in(&ran) {
+				k++
+				idx = (i + k) % uint64(node.nodes.Len())
 			}
+			cur.table.entries = append(cur.table.entries, &FingerEntry{
+				nodeID:  node.nodes[idx].nodeID,
+				address: addr,
+			})
 		}
-		cur.table.successors = append(cur.table.successors, cur.table.entries[0])
 		log.WithFields(log.Fields{
 			"entries":   fmt.Sprintf("%+v", cur.table),
 			"virtualId": i,
@@ -87,28 +78,28 @@ func (node *ChordNode) bootstrapSuccessor(chord *Chord, finger *FingerEntry, i i
 		})()
 	}
 	node.nodes[i].lock.Lock()
-	node.nodes[i].SetSuccessor(successor, 0)
+	node.nodes[i].setSuccessor(successor, 0)
 	node.nodes[i].lock.Unlock()
 }
 
 func (node *ChordNode) findVirtualNode(nodeID *Key) (*VirtualNode, error) {
-	idx := sort.Search(len(node.nodes), func(i int) bool {
-		return node.nodes[i].nodeID.LessEqual(nodeID)
-	})
-	if !node.nodes[idx].nodeID.Equal(nodeID) {
-		return nil, fmt.Errorf("Could not find node with address at address")
+	nodes := node.nodes
+	for i := range nodes {
+		if nodes[i].nodeID.Equal(nodeID) {
+			return nodes[i], nil
+		}
 	}
-	return node.nodes[idx], nil
+	return nil, fmt.Errorf("Failed to find node")
 }
 
 type Empty struct{}
 
 type Args struct {
-	nodeID Key
+	NodeID Key
 }
 
 func (node *ChordNode) Predecessor(args *Args, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.nodeID)
+	vNode, err := node.findVirtualNode(&args.NodeID)
 	if err != nil {
 		return err
 	}
@@ -119,30 +110,30 @@ func (node *ChordNode) Predecessor(args *Args, res *FingerEntry) error {
 }
 
 func (node *ChordNode) Successor(args *Args, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.nodeID)
+	vNode, err := node.findVirtualNode(&args.NodeID)
 	if err != nil {
 		return err
 	}
 	vNode.lock.Lock()
-	res = vNode.table.successors[0]
+	res = vNode.getSuccessor(0)
 	vNode.lock.Unlock()
 	return nil
 }
 
 type NotifyArgs struct {
-	nodeID   Key
-	previous FingerEntry
+	NodeID   Key
+	Previous FingerEntry
 }
 
 func (node *ChordNode) Notify(args *NotifyArgs, res *Empty) error {
-	vNode, err := node.findVirtualNode(&args.nodeID)
+	vNode, err := node.findVirtualNode(&args.NodeID)
 	if err != nil {
 		return err
 	}
 	vNode.lock.Lock()
-	if vNode.table.previous == nil || (!vNode.table.previous.nodeID.LessEqual(&args.nodeID) && vNode.nodeID.Less(&args.nodeID)) {
-		vNode.table.previous.address = args.previous.address
-		vNode.table.previous.nodeID = args.previous.nodeID
+	if vNode.table.previous == nil || (!vNode.table.previous.nodeID.LessEqual(&args.NodeID) && vNode.nodeID.Less(&args.NodeID)) {
+		vNode.table.previous.address = args.Previous.address
+		vNode.table.previous.nodeID = args.Previous.nodeID
 	}
 	vNode.lock.Unlock()
 	return nil
@@ -151,18 +142,18 @@ func (node *ChordNode) Notify(args *NotifyArgs, res *Empty) error {
 // FindPredecessorArgs Arguments to the FindClosestPredecessor function
 type FindPredecessorArgs struct {
 	// The node to find the key on
-	nodeID Key
+	NodeID Key
 	// The key to look for
-	find Key
+	Find Key
 }
 
 func (node *ChordNode) FindClosestPredecessor(args *FindPredecessorArgs, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.nodeID)
+	vNode, err := node.findVirtualNode(&args.NodeID)
 	if err != nil {
 		return err
 	}
 	vNode.lock.Lock()
-	res = vNode.ClosestPrecedingFinger(args.find)
+	res = vNode.ClosestPrecedingFinger(args.Find)
 	vNode.lock.Unlock()
 	return nil
 }

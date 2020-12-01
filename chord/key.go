@@ -13,7 +13,7 @@ const (
 )
 
 type Key struct {
-	inner big.Int
+	Inner big.Int
 }
 
 type KeyRange struct {
@@ -34,7 +34,7 @@ func CreateKey(addr *net.TCPAddr, virtualID uint32) Key {
 	res := big.Int{}
 	res.SetBytes(hash)
 	return Key{
-		inner: res,
+		Inner: res,
 	}
 }
 
@@ -46,23 +46,23 @@ func (a *Key) Next(k uint) Key {
 	mod := big.NewInt(0).SetBytes(slice)
 	offset := big.NewInt(2)
 	offset.Lsh(offset, k)
-	res := offset.Add(&a.inner, offset)
+	res := offset.Add(&a.Inner, offset)
 	return Key{
-		inner: *res.And(res, mod),
+		Inner: *res.And(res, mod),
 	}
 }
 
 func (a *Key) Less(b *Key) bool {
-	return a.inner.Cmp(&b.inner) == -1
+	return a.Inner.Cmp(&b.Inner) == -1
 }
 
 func (a *Key) LessEqual(b *Key) bool {
-	cmp := a.inner.Cmp(&b.inner)
+	cmp := a.Inner.Cmp(&b.Inner)
 	return cmp == -1 || cmp == 0
 }
 
 func (a *Key) Equal(b *Key) bool {
-	return a.inner.Cmp(&b.inner) == 0
+	return a.Inner.Cmp(&b.Inner) == 0
 }
 
 func (a *Key) to(b *Key) KeyRange {
@@ -73,7 +73,7 @@ func (a *Key) to(b *Key) KeyRange {
 }
 
 func (a *Key) in(b *KeyRange) bool {
-	if b.from.Less(&b.to) {
+	if b.from.LessEqual(&b.to) {
 		return b.from.Less(a) && a.LessEqual(&b.to)
 	} else {
 		return a.Less(&b.from) || b.to.LessEqual(a)
