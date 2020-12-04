@@ -84,5 +84,12 @@ func (cfg *Config) CreateChord() (*Chord, error) {
 /// Run start running the node
 func (chord *Chord) Run() {
 	chord.node.run()
-	chord.rpc.Accept(chord.server)
+	for {
+		conn, err := chord.server.Accept()
+		log.Tracef("Incomming request from %v", conn.RemoteAddr())
+		if err != nil {
+			log.Warnf("Error accepting incomming connection: %v", err)
+		}
+		go chord.rpc.ServeConn(conn)
+	}
 }

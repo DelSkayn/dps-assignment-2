@@ -30,11 +30,11 @@ type virtualNode struct {
 	successors  Fingers
 }
 
-func CreateVirtualNode(addr *net.TCPAddr, virtualID uint32) *virtualNode {
+func CreateVirtualNode(addr *net.TCPAddr, virtualID uint32, bitsInKey uint32) *virtualNode {
 	res := new(virtualNode)
-	res.ID = CreateKey(addr, virtualID)
+	res.ID = CreateKey(addr, virtualID, bitsInKey)
 	res.virtualID = virtualID
-	for i := 0; i < maxFingers; i++ {
+	for i := 0; i < int(bitsInKey); i++ {
 		res.fingers = append(res.fingers, nil)
 	}
 	return res
@@ -219,7 +219,7 @@ func (vnode *virtualNode) stabilize(cfg *Config) {
 func (vnode *virtualNode) fixFingers(cfg *Config) {
 	for {
 		log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
-		random := rand.Uint32() % maxFingers
+		random := rand.Uint32() % cfg.bitsInKey
 		id := vnode.ID.Next(uint(random))
 		new, err := vnode.FindSuccessor(id, cfg)
 		if err != nil {
@@ -230,5 +230,32 @@ func (vnode *virtualNode) fixFingers(cfg *Config) {
 			vnode.lock.Unlock()
 		}
 		sleepInterval(cfg)
+	}
+}
+
+func (vnode *virtualNode) checkPredecessor(cfg *Config) {
+	for {
+		func() {
+			log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
+			defer sleepInterval(cfg)
+			vnode.lock.Lock()
+			pred := vnode.predecessor
+			vnode.lock.Unlock()
+			if pred == nil {
+				return
+			}
+			args := SuccessorArgs{
+				ID: pred.ID,
+			}
+			res := new(SuccessorResult)
+			if err := call(pred.Addr, "Node.Successor", &args, res); err != nil {
+				log.Warnf("Predecessor failed: %v", err)
+				vnode.lock.Lock()
+				if vnode.predecessor.ID.Cmp(&pred.ID) == 0 {
+					vnode.predecessor = nil
+				}
+				vnode.lock.Unlock()
+			}
+		}()
 	}
 }

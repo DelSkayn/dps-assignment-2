@@ -13,6 +13,7 @@ type Config struct {
 	bootstrap         *net.TCPAddr
 	numSuccessors     uint32
 	numVirtualNodes   uint32
+	bitsInKey         uint32
 	host              *net.TCPAddr
 	stabilizeInterval time.Duration
 }
@@ -31,6 +32,7 @@ func ConfigBuilder() *Config {
 		bootstrap:         nil,
 		host:              host,
 		numSuccessors:     3,
+		bitsInKey:         32,
 		numVirtualNodes:   4,
 		stabilizeInterval: duration,
 	}
@@ -70,6 +72,11 @@ func (cfg *Config) StabilizeInterval(interval string) (*Config, error) {
 	}
 	cfg.stabilizeInterval = duration
 	return cfg, nil
+}
+
+func (cfg *Config) BitsInKey(bits uint32) *Config {
+	cfg.bitsInKey = bits
+	return cfg
 }
 
 func (cfg *Config) Validate() error {

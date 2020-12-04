@@ -23,7 +23,7 @@ type Node struct {
 func createNode(cfg *Config) (*Node, error) {
 	nodes := VNodes{}
 	for i := uint32(0); i < cfg.numVirtualNodes; i++ {
-		nodes = append(nodes, CreateVirtualNode(cfg.host, i))
+		nodes = append(nodes, CreateVirtualNode(cfg.host, i, cfg.bitsInKey))
 	}
 	sort.Sort(nodes)
 	if cfg.bootstrap != nil {
@@ -33,7 +33,7 @@ func createNode(cfg *Config) (*Node, error) {
 			return nil, fmt.Errorf("Failed to connect to bootstrap node: %v", err)
 		}
 		client := rpc.NewClient(conn)
-		id := CreateKey(cfg.bootstrap, 0)
+		id := CreateKey(cfg.bootstrap, 0, cfg.bitsInKey)
 		for i := range nodes {
 			arg := FindSuccessorArgs{
 				ID:   id,
@@ -50,37 +50,12 @@ func createNode(cfg *Config) (*Node, error) {
 		}
 	} else {
 		// Node is the initial node of the network so initialize localy
-		// For each node
 		for i := range nodes {
 			nodes[i].setSuccessor(0, &Finger{
 				ID:   nodes[(i+1)%nodes.Len()].ID,
 				Addr: cfg.host,
 			})
 		}
-
-		/*
-			for i := range nodes {
-				start := nodes[i].ID
-				end := nodes[i].ID
-				// For all fingers
-				for f := range nodes[i].fingers {
-					ran := start.To(&end)
-					j := 1
-					idx := (i + j) % nodes.Len()
-					// While the node id is in the range between the current nodes id and to be found key
-					for nodes[idx].ID.In(&ran) {
-						j++
-						idx = (i + j) % nodes.Len()
-					}
-					// idx is the index of the successor node here
-					nodes[i].fingers[f] = &Finger{
-						ID:   nodes[idx].ID,
-						Addr: cfg.host,
-					}
-					end = start.Next(uint(f))
-				}
-			}
-		*/
 	}
 	res := new(Node)
 	res.cfg = cfg
@@ -113,6 +88,7 @@ func (node *Node) run() {
 	for i := range node.nodes {
 		go node.nodes[i].fixFingers(node.cfg)
 		go node.nodes[i].stabilize(node.cfg)
+		go node.nodes[i].checkPredecessor(node.cfg)
 	}
 }
 

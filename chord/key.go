@@ -10,10 +10,6 @@ import (
 	"net"
 )
 
-const (
-	maxFingers = sha1.Size * 8
-)
-
 type Key struct {
 	Inner big.Int
 }
@@ -23,7 +19,7 @@ type KeyRange struct {
 	to   *Key
 }
 
-func CreateKey(addr *net.TCPAddr, virtualID uint32) Key {
+func CreateKey(addr *net.TCPAddr, virtualID uint32, numBits uint32) Key {
 	var b bytes.Buffer
 	if err := gob.NewEncoder(&b).Encode(addr); err != nil {
 		panic(err)
@@ -37,9 +33,14 @@ func CreateKey(addr *net.TCPAddr, virtualID uint32) Key {
 		panic(err)
 	}
 	hash := hasher.Sum(nil)
-	fmt.Println(len(hash))
 	res := big.Int{}
 	res.SetBytes(hash)
+
+	mod := big.NewInt(2)
+	mod.Exp(mod, big.NewInt(int64(numBits)), nil)
+
+	res.Mod(&res, mod)
+
 	return Key{Inner: res}
 }
 
