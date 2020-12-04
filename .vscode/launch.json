@@ -10,8 +10,21 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cli/cli.go",
-            "env": {},
+            "env": {
+                "CHORD_LOG":"TRACE"
+            },
             "args": ["run"]
+        },
+        {
+            "name": "Launch Secondary node",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cli/cli.go",
+            "env": {
+                "CHORD_LOG":"TRACE"
+            },
+            "args": ["run","--host","localhost:8081","--bootstrap", "localhost:8080"]
         }
     ]
 }

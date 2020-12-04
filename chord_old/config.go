@@ -2,7 +2,6 @@ package chord
 
 import (
 	"fmt"
-	"net"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -10,40 +9,32 @@ import (
 
 // Config a struct containig the configuration for the chord network
 type Config struct {
-	bootstrap         *net.TCPAddr
+	bootstrap         *string
 	numSuccessors     uint32
 	numVirtualNodes   uint32
-	host              *net.TCPAddr
+	host              string
 	stabilizeInterval time.Duration
 }
 
 // ConfigBuilder struct for creating a config for the chord network
 func ConfigBuilder() *Config {
-	duration, err := time.ParseDuration("2s")
+	duration, err := time.ParseDuration("10s")
 	if err != nil {
 		log.Panic(err)
 	}
-	host, err2 := net.ResolveTCPAddr("tcp", "localhost:8080")
-	if err2 != nil {
-		log.Panic(err2)
-	}
 	return &Config{
 		bootstrap:         nil,
-		host:              host,
+		host:              "localhost:8080",
 		numSuccessors:     3,
-		numVirtualNodes:   4,
+		numVirtualNodes:   5,
 		stabilizeInterval: duration,
 	}
 }
 
 // BootstrapAddr add a address for bootstraping the node into the network
-func (cfg *Config) BootstrapAddr(addr string) (*Config, error) {
-	resolveAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-	cfg.bootstrap = resolveAddr
-	return cfg, nil
+func (cfg *Config) BootstrapAddr(addr string) *Config {
+	cfg.bootstrap = &addr
+	return cfg
 }
 
 // NumSuccessors set the amount of successor nodes maintained by a single node
@@ -53,13 +44,9 @@ func (cfg *Config) NumSuccessors(numSuccessors uint32) *Config {
 }
 
 // Host change the host address
-func (cfg *Config) Host(host string) (*Config, error) {
-	resolveAddr, err := net.ResolveTCPAddr("tcp", host)
-	if err != nil {
-		return nil, err
-	}
-	cfg.host = resolveAddr
-	return cfg, nil
+func (cfg *Config) Host(host string) *Config {
+	cfg.host = host
+	return cfg
 }
 
 // Host change the host address

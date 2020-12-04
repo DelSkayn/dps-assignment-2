@@ -1,142 +1,234 @@
 package chord
 
 import (
+	"fmt"
 	"math/rand"
 	"net"
+	"net/rpc"
 	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-// FingerEntry An entrie in the finger table
-type FingerEntry struct {
-	// The hash of the node id
-	nodeID Key
-	// The address of the node
-	address *net.TCPAddr
+type Finger struct {
+	ID   Key
+	Addr *net.TCPAddr
 }
 
-type FingerEntries []*FingerEntry
+type Fingers []*Finger
 
-func (a FingerEntries) Len() int           { return len(a) }
-func (a FingerEntries) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a FingerEntries) Less(i, j int) bool { return a[i].nodeID.Less(&a[j].nodeID) }
+func (a Fingers) Len() int { return len(a) }
 
-// FingerTable The finger table containing the addresses of other nodes
-type FingerTable struct {
-	entries      FingerEntries
-	previous     *FingerEntry
-	additionSucc []*FingerEntry
-}
-
-// Node A single virtual node
-type VirtualNode struct {
-	// The hash of the current nodes id
-	nodeID Key
-	addr   *net.TCPAddr
-	// The virtual Id of the node
+type virtualNode struct {
+	ID        Key
 	virtualID uint32
-	cfg       *Config
 
-	lock  sync.Mutex
-	table FingerTable
+	lock        sync.Mutex
+	fingers     Fingers
+	predecessor *Finger
+	successors  Fingers
 }
 
-// NewNode create a new virtual node
-func NewVirtualNode(cfg *Config, virtualID uint32, addr *net.TCPAddr) *VirtualNode {
-	nodeID := CreateKey(addr, virtualID)
-	log.WithFields(log.Fields{
-		"virtualId": virtualID,
-		"id":        nodeID.Inner.String(),
-	}).Trace("Starting virtual node")
-
-	res := new(VirtualNode)
-	res.table = FingerTable{
-		entries:      nil,
-		previous:     nil,
-		additionSucc: nil,
-	}
-	res.addr = addr
-	res.nodeID = nodeID
+func CreateVirtualNode(addr *net.TCPAddr, virtualID uint32) *virtualNode {
+	res := new(virtualNode)
+	res.ID = CreateKey(addr, virtualID)
 	res.virtualID = virtualID
-	res.cfg = cfg
+	for i := 0; i < maxFingers; i++ {
+		res.fingers = append(res.fingers, nil)
+	}
 	return res
 }
 
-// ClosestPrecedingFinger returns the closest preceding finger according to chord paper
-func (vnode *VirtualNode) ClosestPrecedingFinger(nodeID Key) *FingerEntry {
-	ran := vnode.nodeID.to(&nodeID)
-	for i := len(vnode.table.entries) - 1; i > 0; i++ {
-		if vnode.table.entries[i].nodeID.in(&ran) {
-			return vnode.table.entries[i]
+// Gets the successor
+// REQUIRES LOCKING
+func (vnode *virtualNode) getSuccessor(i uint) *Finger {
+	if i == 0 {
+		return vnode.fingers[0]
+	} else {
+		return vnode.successors[i-1]
+	}
+}
+
+// REQUIRES LOCKING
+func (vnode *virtualNode) setSuccessor(i uint, succ *Finger) {
+	if i == 0 {
+		vnode.fingers[0] = succ
+	} else {
+		vnode.successors[i-1] = succ
+	}
+}
+
+// REQUIRES LOCKING
+func (vnode *virtualNode) findClosestPredecessor(ID Key, localAddr *net.TCPAddr) *Finger {
+	ran := vnode.ID.To(&ID)
+	for i := vnode.fingers.Len() - 1; i > 0; i-- {
+		if vnode.fingers[i] != nil && vnode.fingers[i].ID.In(&ran) {
+			return vnode.fingers[i]
 		}
 	}
-	res := new(FingerEntry)
-	res.nodeID = vnode.nodeID
-	res.address = vnode.addr
+	res := new(Finger)
+	res.ID = vnode.ID
+	res.Addr = localAddr
 	return res
 }
 
-func (vnode *VirtualNode) setSuccessor(entry *FingerEntry, i int) {
-	if i == 0 {
-		vnode.table.entries[0] = entry
-	} else {
-		vnode.table.additionSucc[i-1] = entry
+// REQUIRES LOCKING
+func (vnode *virtualNode) notify(predecessor *Finger) {
+	if vnode.predecessor == nil {
+		vnode.predecessor = predecessor
+		return
+	}
+	ran := vnode.predecessor.ID.To(&vnode.ID)
+	if predecessor.ID.In(&ran) {
+		vnode.predecessor = predecessor
 	}
 }
 
-func (vnode *VirtualNode) getSuccessor(i int) *FingerEntry {
-	if i == 0 {
-		return vnode.table.entries[0]
-	} else {
-		return vnode.table.additionSucc[i-1]
+func call(addr *net.TCPAddr, name string, args interface{}, result interface{}) error {
+	conn, err := net.DialTCP("tcp", nil, addr)
+	if err != nil {
+		// TODO Should this remove the successor from the list?
+		return fmt.Errorf("Failed to connect to %v: %v", addr, err)
 	}
+	rpc := rpc.NewClient(conn)
+	err = rpc.Call(name, args, result)
+	if err != nil {
+		firstErr := fmt.Errorf("Error during RPC call: %v", err)
+		err = rpc.Close()
+		if err != nil {
+			return fmt.Errorf("%v\nAlso: Error while closing RPC client: %v", firstErr, err)
+		}
+		return firstErr
+	}
+	rpc.Close()
+	return nil
 }
 
-func (vnode *VirtualNode) Stabilize(chord *Chord) {
-	// TODO add random fluctation to sleep time to spread load over time
-	go (func() {
-		for {
-			vnode.lock.Lock()
-			succ := vnode.getSuccessor(0)
-			vnode.lock.Unlock()
-
-			pred, err := chord.predecessor(succ)
-			if err != nil {
-				log.Warn("Failed to retrieve predecessor of successor: ", err)
-				time.Sleep(chord.cfg.stabilizeInterval)
-				continue
-				//TODO
+// DON'T LOCK
+func (vnode *virtualNode) FindSuccessor(find Key, cfg *Config) (*Finger, error) {
+	cur := &Finger{
+		ID:   vnode.ID,
+		Addr: cfg.host,
+	}
+	vnode.lock.Lock()
+	succ := vnode.getSuccessor(0)
+	vnode.lock.Unlock()
+	ran := cur.ID.To(&succ.ID)
+	for !find.In(&ran) {
+		{
+			args := FindClosestPredecessorArg{
+				ID:   cur.ID,
+				Find: find,
 			}
-			ran := vnode.nodeID.to(&succ.nodeID)
-			if pred.nodeID.in(&ran) {
+			res := new(FindClosestPredecessorRes)
+			err := call(cur.Addr, "Node.FindClosestPredecessor", &args, res)
+			if err != nil {
+				// TODO better error handling
+				return nil, err
+			}
+			if res.Predecessor == nil {
+				panic("res.Predecessor == nil")
+			}
+			cur = res.Predecessor
+		}
+		args := SuccessorArgs{
+			ID: cur.ID,
+		}
+		res := new(SuccessorResult)
+		err := call(cur.Addr, "Node.Successor", &args, res)
+		if err != nil {
+			// TODO better error handling
+			return nil, err
+		}
+		if res.Successors == nil {
+			panic("res.Successors == nil")
+		}
+		if succ.ID.Cmp(&res.Successors.ID) == 0 {
+			return succ, nil
+		}
+		succ = res.Successors
+		ran = cur.ID.To(&succ.ID)
+	}
+	return cur, nil
+}
+
+// Add random fluctation to sleeping to time spread load over time
+func sleepInterval(cfg *Config) {
+	rand := rand.Int63()%200 - 100
+	if rand == 0 {
+		rand = 1
+	}
+	fluctuation := cfg.stabilizeInterval.Nanoseconds() / int64(10) / rand
+	t := cfg.stabilizeInterval.Nanoseconds() + fluctuation
+	duration := time.Duration(t)
+	time.Sleep(duration)
+}
+
+// Fix predecessors and successors
+func (vnode *virtualNode) stabilize(cfg *Config) {
+	for {
+		log.Tracef("[%v]:stabilize", vnode.ID.Readable())
+		vnode.lock.Lock()
+		succ := vnode.getSuccessor(0)
+		vnode.lock.Unlock()
+		// Just some assertions for sanity
+		if succ == nil {
+			panic("succ == nil")
+		}
+		if succ.Addr == nil {
+			panic("succ.Addr == nil")
+		}
+
+		// Get the predecessor from the
+		args := PredecessorArgs{
+			ID: succ.ID,
+		}
+		res := new(PredecessorResult)
+		err := call(succ.Addr, "Node.Predecessor", &args, res)
+		if err != nil {
+			log.Warnf("Error trying to retrieve successor.predecessor at addr %v : %v", succ.Addr, err)
+			sleepInterval(cfg)
+			continue
+		}
+		if res.Predecessor != nil {
+			ran := vnode.ID.To(&succ.ID)
+			if res.Predecessor.ID.In(&ran) {
 				vnode.lock.Lock()
-				vnode.setSuccessor(pred, 0)
+				vnode.setSuccessor(0, res.Predecessor)
 				vnode.lock.Unlock()
 			}
-			time.Sleep(chord.cfg.stabilizeInterval)
+			succ = res.Predecessor
 		}
-	})()
-	go (func() {
-		for {
-			random := rand.Uint64() % uint64(maxFingers)
-			toFind := vnode.nodeID.Next(uint(random))
-			successor, err := chord.FindSuccessor(&FingerEntry{
-				address: vnode.addr,
-				nodeID:  vnode.nodeID,
-			}, toFind)
-			if err != nil {
-				log.WithFields(log.Fields{
-					"error": err,
-				}).Warn("Failed to find successor")
-				time.Sleep(chord.cfg.stabilizeInterval)
-				continue
-			}
+		notifyArgs := NotifyArgs{
+			ID: succ.ID,
+			Notify: &Finger{
+				ID:   vnode.ID,
+				Addr: cfg.host,
+			},
+		}
+		notifyRes := new(NotifyRes)
+		err = call(succ.Addr, "Node.Notify", &notifyArgs, notifyRes)
+		if err != nil {
+			log.Warnf("Error trying to notify successor: %v", err)
+		}
+		sleepInterval(cfg)
+	}
+}
+
+func (vnode *virtualNode) fixFingers(cfg *Config) {
+	for {
+		log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
+		random := rand.Uint32() % maxFingers
+		id := vnode.ID.Next(uint(random))
+		new, err := vnode.FindSuccessor(id, cfg)
+		if err != nil {
+			log.Warnf("Failed to fix a finger: %v", err)
+		} else {
 			vnode.lock.Lock()
-			vnode.table.entries[random] = successor
+			vnode.fingers[random] = new
 			vnode.lock.Unlock()
-			time.Sleep(chord.cfg.stabilizeInterval)
 		}
-	})()
+		sleepInterval(cfg)
+	}
 }

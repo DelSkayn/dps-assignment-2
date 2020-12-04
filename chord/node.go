@@ -3,157 +3,219 @@ package chord
 import (
 	"fmt"
 	"net"
+	"net/rpc"
 	"sort"
-	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-type ChordNode struct {
-	nodes Nodes
+type VNodes []*virtualNode
+
+func (a VNodes) Len() int           { return len(a) }
+func (a VNodes) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a VNodes) Less(i, j int) bool { return a[i].ID.Cmp(&a[j].ID) == -1 }
+
+type Node struct {
+	cfg   *Config
+	nodes VNodes
 }
 
-func NewNode(cfg *Config, addr *net.TCPAddr) *ChordNode {
-	res := new(ChordNode)
-
-	nodes := Nodes{}
+func createNode(cfg *Config) (*Node, error) {
+	nodes := VNodes{}
 	for i := uint32(0); i < cfg.numVirtualNodes; i++ {
-		nodes = append(nodes, NewVirtualNode(cfg, i, addr))
+		nodes = append(nodes, CreateVirtualNode(cfg.host, i))
 	}
 	sort.Sort(nodes)
-	res.nodes = nodes
-
-	return res
-}
-
-// Initialize the virtual nodes as a single local network.
-func (node *ChordNode) initialize(addr *net.TCPAddr) {
-	log.Info("Initializing virtual nodes")
-	len := uint64(node.nodes.Len())
-	for i := uint64(0); i < len; i++ {
-		cur := node.nodes[i]
-		cur.lock.Lock()
-		ran := cur.nodeID.to(&cur.nodeID)
-		for j := uint64(0); j < maxFingers; j++ {
-			findKey := cur.nodeID.Next(uint(j))
-			ran.to = findKey
-			k := uint64(0)
-			idx := (i + k) % uint64(node.nodes.Len())
-			for node.nodes[idx].nodeID.in(&ran) {
-				k++
-				idx = (i + k) % uint64(node.nodes.Len())
+	if cfg.bootstrap != nil {
+		// Use bootstrap node to find successors
+		conn, err := net.DialTCP("tcp", nil, cfg.bootstrap)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to connect to bootstrap node: %v", err)
+		}
+		client := rpc.NewClient(conn)
+		id := CreateKey(cfg.bootstrap, 0)
+		for i := range nodes {
+			arg := FindSuccessorArgs{
+				ID:   id,
+				Find: nodes[i].ID,
 			}
-			cur.table.entries = append(cur.table.entries, &FingerEntry{
-				nodeID:  node.nodes[idx].nodeID,
-				address: addr,
+			res := new(FindSuccessorRes)
+			if err := client.Call("Node.FindSuccessor", &arg, res); err != nil {
+				return nil, fmt.Errorf("Fialed to find successor for virtual node: %v", err)
+			}
+			if res.Successor == nil {
+				panic("res.Predecessor == nil")
+			}
+			nodes[i].setSuccessor(0, res.Successor)
+		}
+	} else {
+		// Node is the initial node of the network so initialize localy
+		// For each node
+		for i := range nodes {
+			nodes[i].setSuccessor(0, &Finger{
+				ID:   nodes[(i+1)%nodes.Len()].ID,
+				Addr: cfg.host,
 			})
 		}
-		log.WithFields(log.Fields{
-			"entries":   fmt.Sprintf("%+v", cur.table),
-			"virtualId": i,
-		}).Debug("initialized virtual node")
-		// Find the successor in the current nodes
-		cur.lock.Unlock()
+
+		/*
+			for i := range nodes {
+				start := nodes[i].ID
+				end := nodes[i].ID
+				// For all fingers
+				for f := range nodes[i].fingers {
+					ran := start.To(&end)
+					j := 1
+					idx := (i + j) % nodes.Len()
+					// While the node id is in the range between the current nodes id and to be found key
+					for nodes[idx].ID.In(&ran) {
+						j++
+						idx = (i + j) % nodes.Len()
+					}
+					// idx is the index of the successor node here
+					nodes[i].fingers[f] = &Finger{
+						ID:   nodes[idx].ID,
+						Addr: cfg.host,
+					}
+					end = start.Next(uint(f))
+				}
+			}
+		*/
 	}
+	res := new(Node)
+	res.cfg = cfg
+	res.nodes = nodes
+	return res, nil
 }
 
-func (node *ChordNode) bootstrap(chord *Chord, bootstrap *net.TCPAddr) {
-	key := CreateKey(bootstrap, 0)
-	finger := new(FingerEntry)
-	finger.address = bootstrap
-	finger.nodeID = key
-	for i := 0; i < len(node.nodes); i++ {
-		node.bootstrapSuccessor(chord, finger, i)
-	}
-}
-
-func (node *ChordNode) bootstrapSuccessor(chord *Chord, finger *FingerEntry, i int) {
-	successor, err := chord.FindSuccessor(finger, node.nodes[i].nodeID)
-	if err != nil {
-		log.Warn("Failed to bootstrap virtualnode %v: %v", i, err)
-		go (func() {
-			time.Sleep(100 * time.Millisecond)
-			log.Info("Retrying to bootstrap virtual node %v", i)
-			node.bootstrapSuccessor(chord, finger, i)
-		})()
-	}
-	node.nodes[i].lock.Lock()
-	node.nodes[i].setSuccessor(successor, 0)
-	node.nodes[i].lock.Unlock()
-}
-
-func (node *ChordNode) findVirtualNode(nodeID *Key) (*VirtualNode, error) {
-	nodes := node.nodes
-	for i := range nodes {
-		if nodes[i].nodeID.Equal(nodeID) {
-			return nodes[i], nil
+// Find a virtual node with the given key
+// returns nil if the node was not found
+func (node *Node) findVirtualNode(id *Key) *virtualNode {
+	idx := 0
+	for idx = range node.nodes {
+		if node.nodes[idx].ID.Cmp(id) == 0 {
+			break
 		}
 	}
-	return nil, fmt.Errorf("Failed to find node")
-}
-
-type Empty struct{}
-
-type Args struct {
-	NodeID Key
-}
-
-func (node *ChordNode) Predecessor(args *Args, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.NodeID)
-	if err != nil {
-		return err
+	if idx >= node.nodes.Len() {
+		return nil
+	} else {
+		if node.nodes[idx].ID.Cmp(id) != 0 {
+			return nil
+		} else {
+			return node.nodes[idx]
+		}
 	}
-	vNode.lock.Lock()
-	res = vNode.table.previous
-	vNode.lock.Unlock()
+}
+
+// Start all the stablization ticks
+func (node *Node) run() {
+	for i := range node.nodes {
+		go node.nodes[i].fixFingers(node.cfg)
+		go node.nodes[i].stabilize(node.cfg)
+	}
+}
+
+type PredecessorArgs struct {
+	ID Key
+}
+
+type PredecessorResult struct {
+	Predecessor *Finger
+}
+
+func (node *Node) Predecessor(args *PredecessorArgs, res *PredecessorResult) error {
+	vnode := node.findVirtualNode(&args.ID)
+	if vnode == nil {
+		return fmt.Errorf("No such node [%v]", args.ID.Readable())
+	}
+	log.Tracef("[%v]RPC:Predecessor", vnode.ID.Readable())
+	vnode.lock.Lock()
+	res.Predecessor = vnode.predecessor
+	vnode.lock.Unlock()
 	return nil
 }
 
-func (node *ChordNode) Successor(args *Args, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.NodeID)
-	if err != nil {
-		return err
+type SuccessorArgs struct {
+	ID Key
+}
+
+type SuccessorResult struct {
+	Successors *Finger
+}
+
+func (node *Node) Successor(args *SuccessorArgs, res *SuccessorResult) error {
+	vnode := node.findVirtualNode(&args.ID)
+	if vnode == nil {
+		return fmt.Errorf("No such node [%v]", args.ID.Readable())
 	}
-	vNode.lock.Lock()
-	res = vNode.getSuccessor(0)
-	vNode.lock.Unlock()
+	log.Tracef("[%v]RPC:Successor", vnode.ID.Readable())
+	vnode.lock.Lock()
+	res.Successors = vnode.getSuccessor(0)
+	vnode.lock.Unlock()
+	return nil
+}
+
+type FindClosestPredecessorArg struct {
+	ID   Key
+	Find Key
+}
+
+type FindClosestPredecessorRes struct {
+	Predecessor *Finger
+}
+
+func (node *Node) FindClosestPredecessor(args *FindClosestPredecessorArg, res *FindClosestPredecessorRes) error {
+	vnode := node.findVirtualNode(&args.ID)
+	if vnode == nil {
+		return fmt.Errorf("No such node [%v]", args.ID.Readable())
+	}
+	log.Tracef("[%v]RPC:FindClosestPredecessor", vnode.ID.Readable())
+	vnode.lock.Lock()
+	res.Predecessor = vnode.findClosestPredecessor(args.Find, node.cfg.host)
+	vnode.lock.Unlock()
 	return nil
 }
 
 type NotifyArgs struct {
-	NodeID   Key
-	Previous FingerEntry
+	ID     Key
+	Notify *Finger
 }
 
-func (node *ChordNode) Notify(args *NotifyArgs, res *Empty) error {
-	vNode, err := node.findVirtualNode(&args.NodeID)
-	if err != nil {
-		return err
+type NotifyRes struct{}
+
+func (node *Node) Notify(args *NotifyArgs, res *NotifyRes) error {
+	vnode := node.findVirtualNode(&args.ID)
+	if vnode == nil {
+		return fmt.Errorf("No such node [%v]", args.ID.Readable())
 	}
-	vNode.lock.Lock()
-	if vNode.table.previous == nil || (!vNode.table.previous.nodeID.LessEqual(&args.NodeID) && vNode.nodeID.Less(&args.NodeID)) {
-		vNode.table.previous.address = args.Previous.address
-		vNode.table.previous.nodeID = args.Previous.nodeID
-	}
-	vNode.lock.Unlock()
+	log.Tracef("[%v]RPC:Notify", vnode.ID.Readable())
+	vnode.lock.Lock()
+	vnode.notify(args.Notify)
+	vnode.lock.Unlock()
 	return nil
 }
 
-// FindPredecessorArgs Arguments to the FindClosestPredecessor function
-type FindPredecessorArgs struct {
-	// The node to find the key on
-	NodeID Key
-	// The key to look for
+type FindSuccessorArgs struct {
+	ID   Key
 	Find Key
 }
 
-func (node *ChordNode) FindClosestPredecessor(args *FindPredecessorArgs, res *FingerEntry) error {
-	vNode, err := node.findVirtualNode(&args.NodeID)
+type FindSuccessorRes struct {
+	Successor *Finger
+}
+
+func (node *Node) FindSuccessor(args *FindSuccessorArgs, res *FindSuccessorRes) error {
+	vnode := node.findVirtualNode(&args.ID)
+	if vnode == nil {
+		return fmt.Errorf("No such node [%v]", args.ID.Readable())
+	}
+	log.Tracef("[%v]RPC:FindSuccessor", vnode.ID.Readable())
+	// Should not lock
+	result, err := vnode.FindSuccessor(args.Find, node.cfg)
 	if err != nil {
 		return err
 	}
-	vNode.lock.Lock()
-	res = vNode.ClosestPrecedingFinger(args.Find)
-	vNode.lock.Unlock()
+	res.Successor = result
 	return nil
 }
