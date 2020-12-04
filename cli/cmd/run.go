@@ -22,16 +22,25 @@ var tryCmd = &cobra.Command{
 	Short: "Run the cdfs deamon",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := chord.ConfigBuilder()
+		var err error
 		if host != "" {
-			cfg = cfg.Host(host)
+			cfg, err = cfg.Host(host)
+			if err != nil {
+				return err
+			}
 		}
 		if bootstrap != "" {
-			cfg = cfg.BootstrapAddr(bootstrap)
+			cfg, err = cfg.BootstrapAddr(bootstrap)
+			if err != nil {
+				return err
+			}
 		}
 
-		if _, err := chord.Run(cfg); err != nil {
+		chord, err := cfg.CreateChord()
+		if err != nil {
 			return err
 		}
+		chord.Run()
 		return nil
 	},
 }
