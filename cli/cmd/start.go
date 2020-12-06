@@ -36,11 +36,9 @@ var tryCmd = &cobra.Command{
 		}
 		cfg := chord.ConfigBuilder()
 		var err error
-		if host != "" {
-			cfg, err = cfg.Host(args[0])
-			if err != nil {
-				return err
-			}
+		cfg, err = cfg.Host(args[0])
+		if err != nil {
+			return err
 		}
 		if bootstrap != "" {
 			cfg, err = cfg.BootstrapAddr(bootstrap)
