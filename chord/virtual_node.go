@@ -21,8 +21,9 @@ type Fingers []*Finger
 func (a Fingers) Len() int { return len(a) }
 
 type virtualNode struct {
-	ID        Key
-	virtualID uint32
+	ID            Key
+	virtualID     uint32
+	numSuccessors uint32
 
 	lock        sync.Mutex
 	fingers     Fingers
@@ -30,13 +31,14 @@ type virtualNode struct {
 	successors  Fingers
 }
 
-func CreateVirtualNode(addr *net.TCPAddr, virtualID uint32, bitsInKey uint32) *virtualNode {
+func CreateVirtualNode(addr *net.TCPAddr, virtualID uint32, bitsInKey uint32, numSuccessors uint32) *virtualNode {
 	res := new(virtualNode)
 	res.ID = CreateKey(addr, virtualID, bitsInKey)
 	res.virtualID = virtualID
 	for i := 0; i < int(bitsInKey); i++ {
 		res.fingers = append(res.fingers, nil)
 	}
+	res.numSuccessors = numSuccessors
 	return res
 }
 
@@ -56,6 +58,54 @@ func (vnode *virtualNode) setSuccessor(i uint, succ *Finger) {
 		vnode.fingers[0] = succ
 	} else {
 		vnode.successors[i-1] = succ
+	}
+}
+
+// REQUIRES LOCKING
+func (vnode *virtualNode) invalidateSuccessor(i uint) {
+	if i == 0 {
+		vnode.fingers[0] = nil
+		if len(vnode.successors) != 0 {
+			vnode.fingers[0] = vnode.successors[0]
+			vnode.successors = vnode.successors[1:]
+		}
+	} else {
+		vnode.successors = append(vnode.successors[:i+1], vnode.successors[i+2:]...)
+	}
+}
+
+// REQUIRES LOCKING
+func (vnode *virtualNode) appendSuccessor(succ *Finger) {
+	len := vnode.successors.Len() + 1
+	prev := vnode.ID
+	i := 0
+	for i < len {
+		cur := vnode.getSuccessor(uint(i)).ID
+		if cur.Cmp(&succ.ID) == 0 {
+			return
+		}
+		ran := prev.To(&cur)
+		if succ.ID.In(&ran) {
+			break
+		}
+		prev = cur
+		i++
+	}
+	if i == 0 {
+		prev := vnode.getSuccessor(0)
+		vnode.setSuccessor(0, succ)
+		vnode.successors = append((Fingers{prev}), vnode.successors...)
+	} else {
+		idx := i - 1
+		if idx == vnode.successors.Len() {
+			vnode.successors = append(vnode.successors, succ)
+		} else {
+			vnode.successors = append(vnode.successors[:idx+1], vnode.successors[idx:]...)
+			vnode.successors[idx] = succ
+		}
+	}
+	if uint32(vnode.successors.Len()+1) > vnode.numSuccessors {
+		vnode.successors = vnode.successors[:vnode.numSuccessors-1]
 	}
 }
 
@@ -165,97 +215,136 @@ func sleepInterval(cfg *Config) {
 	time.Sleep(duration)
 }
 
+func (vnode *virtualNode) stabilizeLoop(cfg *Config) {
+	for {
+		vnode.stabilize(cfg)
+		sleepInterval(cfg)
+	}
+}
+
 // Fix predecessors and successors
 func (vnode *virtualNode) stabilize(cfg *Config) {
-	for {
-		log.Tracef("[%v]:stabilize", vnode.ID.Readable())
-		vnode.lock.Lock()
-		succ := vnode.getSuccessor(0)
-		vnode.lock.Unlock()
-		// Just some assertions for sanity
-		if succ == nil {
-			panic("succ == nil")
-		}
-		if succ.Addr == nil {
-			panic("succ.Addr == nil")
-		}
+	log.Tracef("[%v]:stabilize", vnode.ID.Readable())
+	vnode.lock.Lock()
+	succ := vnode.getSuccessor(0)
+	vnode.lock.Unlock()
+	// Just some assertions for sanity
+	if succ == nil {
+		panic("succ == nil")
+	}
+	if succ.Addr == nil {
+		panic("succ.Addr == nil")
+	}
 
-		// Get the predecessor from the
-		args := PredecessorArgs{
-			ID: succ.ID,
-		}
-		res := new(PredecessorResult)
-		err := call(succ.Addr, "Node.Predecessor", &args, res)
-		if err != nil {
-			log.Warnf("Error trying to retrieve successor.predecessor at addr %v : %v", succ.Addr, err)
-			sleepInterval(cfg)
-			continue
-		}
-		if res.Predecessor != nil {
-			ran := vnode.ID.To(&succ.ID)
-			if res.Predecessor.ID.In(&ran) {
-				vnode.lock.Lock()
-				vnode.setSuccessor(0, res.Predecessor)
-				vnode.lock.Unlock()
-			}
-			succ = res.Predecessor
-		}
-		notifyArgs := NotifyArgs{
-			ID: succ.ID,
-			Notify: &Finger{
-				ID:   vnode.ID,
-				Addr: cfg.host,
-			},
-		}
-		notifyRes := new(NotifyRes)
-		err = call(succ.Addr, "Node.Notify", &notifyArgs, notifyRes)
-		if err != nil {
-			log.Warnf("Error trying to notify successor: %v", err)
-		}
+	// Get the predecessor from the successor
+	args := PredecessorArgs{
+		ID: succ.ID,
+	}
+	res := new(PredecessorResult)
+	err := call(succ.Addr, "Node.Predecessor", &args, res)
+	if err != nil {
+		log.Warnf("Error trying to retrieve successor.predecessor at addr %v : %v", succ.Addr, err)
+		vnode.invalidateSuccessor(0)
+		return
+	}
+	if res.Predecessor != nil {
+		vnode.lock.Lock()
+		vnode.appendSuccessor(res.Predecessor)
+		succ = vnode.getSuccessor(0)
+		vnode.lock.Unlock()
+	}
+	notifyArgs := NotifyArgs{
+		ID: succ.ID,
+		Notify: &Finger{
+			ID:   vnode.ID,
+			Addr: cfg.host,
+		},
+	}
+	notifyRes := new(NotifyRes)
+	err = call(succ.Addr, "Node.Notify", &notifyArgs, notifyRes)
+	if err != nil {
+		log.Warnf("Error trying to notify successor: %v", err)
+		return
+	}
+}
+
+func (vnode *virtualNode) maintainSuccessorsLoop(cfg *Config) {
+	for {
+		vnode.maintainSuccessors(cfg)
+		sleepInterval(cfg)
+	}
+}
+
+func (vnode *virtualNode) maintainSuccessors(cfg *Config) {
+	// Find additional successor
+
+	vnode.lock.Lock()
+	pick := uint(rand.Int()) % uint(vnode.successors.Len())
+	succ := vnode.getSuccessor(pick)
+	vnode.lock.Unlock()
+	arg := SuccessorArgs{
+		ID: succ.ID,
+	}
+	res := new(SuccessorResult)
+	if err := call(succ.Addr, "Node.Successor", &arg, res); err != nil {
+		log.Warnf("Error trying to find successor of successor: %v", err)
+		vnode.lock.Lock()
+		vnode.invalidateSuccessor(pick)
+		vnode.lock.Unlock()
+		return
+	} else {
+		vnode.lock.Lock()
+		vnode.appendSuccessor(res.Successors)
+		vnode.lock.Unlock()
+	}
+}
+
+func (vnode *virtualNode) fixFingersLoop(cfg *Config) {
+	for {
+		vnode.fixFingers(cfg)
 		sleepInterval(cfg)
 	}
 }
 
 func (vnode *virtualNode) fixFingers(cfg *Config) {
+	log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
+	random := rand.Uint32() % cfg.bitsInKey
+	id := vnode.ID.Next(uint(random))
+	new, err := vnode.FindSuccessor(id, cfg)
+	if err != nil {
+		log.Warnf("Failed to fix a finger: %v", err)
+	} else {
+		vnode.lock.Lock()
+		vnode.fingers[random] = new
+		vnode.lock.Unlock()
+	}
+}
+
+func (vnode *virtualNode) checkPredecessorLoop(cfg *Config) {
 	for {
-		log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
-		random := rand.Uint32() % cfg.bitsInKey
-		id := vnode.ID.Next(uint(random))
-		new, err := vnode.FindSuccessor(id, cfg)
-		if err != nil {
-			log.Warnf("Failed to fix a finger: %v", err)
-		} else {
-			vnode.lock.Lock()
-			vnode.fingers[random] = new
-			vnode.lock.Unlock()
-		}
+		vnode.checkPredecessor(cfg)
 		sleepInterval(cfg)
 	}
 }
 
 func (vnode *virtualNode) checkPredecessor(cfg *Config) {
-	for {
-		func() {
-			log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
-			defer sleepInterval(cfg)
-			vnode.lock.Lock()
-			pred := vnode.predecessor
-			vnode.lock.Unlock()
-			if pred == nil {
-				return
-			}
-			args := SuccessorArgs{
-				ID: pred.ID,
-			}
-			res := new(SuccessorResult)
-			if err := call(pred.Addr, "Node.Successor", &args, res); err != nil {
-				log.Warnf("Predecessor failed: %v", err)
-				vnode.lock.Lock()
-				if vnode.predecessor.ID.Cmp(&pred.ID) == 0 {
-					vnode.predecessor = nil
-				}
-				vnode.lock.Unlock()
-			}
-		}()
+	log.Tracef("[%v]:fixFingers", vnode.ID.Readable())
+	vnode.lock.Lock()
+	pred := vnode.predecessor
+	vnode.lock.Unlock()
+	if pred == nil {
+		return
+	}
+	args := SuccessorArgs{
+		ID: pred.ID,
+	}
+	res := new(SuccessorResult)
+	if err := call(pred.Addr, "Node.Successor", &args, res); err != nil {
+		log.Warnf("Predecessor failed: %v", err)
+		vnode.lock.Lock()
+		if vnode.predecessor.ID.Cmp(&pred.ID) == 0 {
+			vnode.predecessor = nil
+		}
+		vnode.lock.Unlock()
 	}
 }
