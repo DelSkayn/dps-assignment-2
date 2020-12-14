@@ -23,7 +23,7 @@ type Node struct {
 func createNode(cfg *Config) (*Node, error) {
 	nodes := VNodes{}
 	for i := uint32(0); i < cfg.numVirtualNodes; i++ {
-		nodes = append(nodes, CreateVirtualNode(cfg.host, i, cfg.bitsInKey))
+		nodes = append(nodes, CreateVirtualNode(cfg.host, i, cfg.bitsInKey, cfg.numSuccessors))
 	}
 	sort.Sort(nodes)
 	if cfg.bootstrap != nil {
@@ -86,9 +86,10 @@ func (node *Node) findVirtualNode(id *Key) *virtualNode {
 // Start all the stablization ticks
 func (node *Node) run() {
 	for i := range node.nodes {
-		go node.nodes[i].fixFingers(node.cfg)
-		go node.nodes[i].stabilize(node.cfg)
-		go node.nodes[i].checkPredecessor(node.cfg)
+		go node.nodes[i].fixFingersLoop(node.cfg)
+		go node.nodes[i].stabilizeLoop(node.cfg)
+		go node.nodes[i].checkPredecessorLoop(node.cfg)
+		go node.nodes[i].maintainSuccessorsLoop(node.cfg)
 	}
 }
 
