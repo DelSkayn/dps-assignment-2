@@ -20,16 +20,7 @@ pub use chord::*;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "cdfs")]
 enum Opt {
-    Query {
-        node: String,
-        value: String,
-        #[structopt(long = "virtual", default_value = "0")]
-        virtual_node: u32,
-        #[structopt(short = "k", long = "key")]
-        is_key: bool,
-        #[structopt(short = "b", long = "bits", default_value = "16")]
-        num_bits: u8,
-    },
+    Query(query::Query),
     Start {
         host: String,
         bootstrap: Option<String>,
@@ -68,13 +59,7 @@ async fn main() -> Result<()> {
             info!("starting");
             return chord::Chord::run(cfg).await;
         }
-        Opt::Query {
-            node,
-            value,
-            virtual_node,
-            is_key,
-            num_bits,
-        } => match query::query(node, value, virtual_node, is_key, num_bits).await {
+        Opt::Query(x) => match query::query(&x).await {
             Ok(()) => {}
             Err(e) => error!("failed to query key: {}", e),
         },

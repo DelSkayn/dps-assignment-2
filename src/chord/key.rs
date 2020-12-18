@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::{fmt, net::SocketAddr};
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Serialize, Deserialize, Hash)]
 pub struct Key {
     value: u128,
     num_bits: u8,
