@@ -9,13 +9,11 @@ mod key;
 pub mod rpc;
 mod virtual_node;
 
-pub use key::Key;
+pub use key::{Key, KeyRange};
 pub use virtual_node::{Finger, FingerTable, VirtualNode};
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    pub host: String,
-    pub bootstrap: Option<String>,
     pub num_bits: u8,
     pub num_successors: u32,
     pub num_virtual_nodes: u32,
@@ -37,36 +35,39 @@ pub struct Chord {
 }
 
 impl Chord {
-    pub async fn run(cfg: Config) -> Result<()> {
-        let mut host = None;
-        for hosts in tokio::net::lookup_host(cfg.host.clone()).await? {
-            host = Some(hosts);
-        }
-        if host.is_none() {
-            bail!("failed to find an address for host")
-        }
-        let host = host.unwrap();
+    pub async fn connect(host: &str, bootstrap: &str) -> Result<()> {
+        let host = tokio::net::lookup_host(host)
+            .await?
+            .next()
+            .ok_or(anyhow!("failed to find an address for host"))?;
 
-        let mut bootstrap = None;
-        if let Some(x) = cfg.bootstrap.clone() {
-            for bootstraps in tokio::net::lookup_host(x).await? {
-                bootstrap = Some(bootstraps);
-            }
-            if bootstrap.is_none() {
-                bail!("failed to find an address for bootstrap")
-            }
-        }
+        info!("starting node on {}", host);
 
-        let chord = if let Some(x) = bootstrap {
-            Self::initialize_bootstrap(cfg, host, x).await?
-        } else {
-            Self::initialize_starter(cfg, host).await
-        };
-        chord.start().await?;
+        let bootstrap = tokio::net::lookup_host(bootstrap)
+            .await?
+            .next()
+            .ok_or(anyhow!("failed to find an address for host"))?;
+
+        info!("connecting to {}", bootstrap);
+        let config = rpc::config(&bootstrap).await?;
+        let chord = Self::initialize_bootstrap(config, host, bootstrap).await?;
+        chord.start_loop().await
+    }
+
+    pub async fn start(host: &str, cfg: Config) -> Result<()> {
+        let host = tokio::net::lookup_host(host)
+            .await?
+            .next()
+            .ok_or(anyhow!("failed to find an address for host"))?;
+
+        info!("starting node on {}", host);
+
+        let chord = Self::initialize_starter(cfg, host);
+        chord.start_loop().await?;
         Ok(())
     }
 
-    async fn initialize_starter(cfg: Config, host: SocketAddr) -> Chord {
+    fn initialize_starter(cfg: Config, host: SocketAddr) -> Chord {
         let cfg_borrow = &cfg;
         let mut keys: Vec<_> = (0..cfg.num_virtual_nodes)
             .map(|x| Key::new(&host, x, cfg_borrow.num_bits))
@@ -138,7 +139,7 @@ impl Chord {
         })
     }
 
-    pub async fn start(self) -> Result<()> {
+    pub async fn start_loop(self) -> Result<()> {
         for i in 0..self.inner.virtual_nodes.len() {
             let clone = self.inner.clone();
             tokio::spawn(async move { clone.virtual_nodes[i].stabilize().await });
@@ -160,47 +161,69 @@ impl Chord {
 
 impl Inner {
     async fn run_loop(self: Arc<Self>) -> Result<()> {
-        let socket = TcpSocket::new_v4()?;
+        let socket = if self.resolved_host.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
         socket.bind(self.resolved_host)?;
         let listener = socket.listen(128)?;
         let this = self.clone();
         rpc::handle_rpc(listener, move |req| {
             let this = this.clone();
             async move {
-                let node = match this
-                    .virtual_nodes
-                    .binary_search_by_key(&req.id, |x| x.this.id)
-                {
-                    Ok(x) => &this.virtual_nodes[x],
-                    Err(_) => return Ok(Err(rpc::ResponseError::NoSuchNode)),
-                };
-                let res: rpc::Response = match req.kind {
-                    rpc::RequestKind::Quit => {
+                let res = match req {
+                    rpc::Request::Ping => Ok(rpc::ResponseData::Pong),
+                    rpc::Request::Quit => {
                         this.quit.lock().await.take().map(|x| x.send(()));
                         Ok(rpc::ResponseData::Quit)
                     }
-                    rpc::RequestKind::Ping => Ok(rpc::ResponseData::Pong),
-                    rpc::RequestKind::Stablize => {
-                        let (predecessor, successors) = node.get_stablize_info().await;
-                        Ok(rpc::ResponseData::Stablize {
-                            predecessor,
-                            successors,
-                        })
-                    }
-                    rpc::RequestKind::Notify(predecessor) => {
-                        node.notify(predecessor.clone()).await;
-                        Ok(rpc::ResponseData::Notify)
-                    }
-                    rpc::RequestKind::Successor => {
-                        Ok(rpc::ResponseData::Successor(node.get_successor().await))
-                    }
-                    rpc::RequestKind::FindClosestPredecessor(x) => {
-                        let res = node.find_closest_predecessor(x).await;
-                        Ok(rpc::ResponseData::FindClosestPredecessor(res))
-                    }
-                    rpc::RequestKind::FindSuccessor(x) => {
-                        let res = node.find_successor(x).await;
-                        Ok(rpc::ResponseData::FindSuccessor(res))
+                    rpc::Request::Config => Ok(rpc::ResponseData::Config(this.cfg.clone())),
+                    rpc::Request::Node { which, request } => {
+                        let node = match this
+                            .virtual_nodes
+                            .binary_search_by_key(&which, |x| x.this.id)
+                        {
+                            Ok(x) => &this.virtual_nodes[x],
+                            Err(_) => return Ok(Err(rpc::ResponseError::NoSuchNode)),
+                        };
+                        match request {
+                            rpc::NodeRequest::Stablize => {
+                                let (predecessor, successors) = node.get_stablize_info().await;
+                                Ok(rpc::ResponseData::Stablize {
+                                    predecessor,
+                                    successors,
+                                })
+                            }
+                            rpc::NodeRequest::Notify(predecessor) => {
+                                node.notify(predecessor.clone()).await;
+                                Ok(rpc::ResponseData::Notify)
+                            }
+                            rpc::NodeRequest::Successor => {
+                                Ok(rpc::ResponseData::Successor(node.get_successor().await))
+                            }
+                            rpc::NodeRequest::FindClosestPredecessor(x) => {
+                                let res = node.find_closest_predecessor(x).await;
+                                Ok(rpc::ResponseData::FindClosestPredecessor(res))
+                            }
+                            rpc::NodeRequest::FindSuccessor(x) => {
+                                let res = node.find_successor(x).await;
+                                Ok(rpc::ResponseData::FindSuccessor(res))
+                            }
+                            rpc::NodeRequest::TransferKeys(x) => {
+                                node.transver_keys(x).await;
+                                Ok(rpc::ResponseData::TransferKeys)
+                            }
+                            rpc::NodeRequest::AddKey(key) => {
+                                node.add_key(key).await;
+                                Ok(rpc::ResponseData::AddKey)
+                            }
+                            rpc::NodeRequest::Contains(key) => {
+                                let res = node.contains_key(key).await;
+                                Ok(rpc::ResponseData::Contains(res))
+                            }
+                            _ => todo!(),
+                        }
                     }
                 };
                 Ok(res)

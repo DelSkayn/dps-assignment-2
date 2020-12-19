@@ -18,8 +18,6 @@ enum QueryKind {
 #[derive(Debug, StructOpt)]
 pub struct Query {
     node: String,
-    #[structopt(short = "b", long = "bits", default_value = "16")]
-    num_bits: u8,
     #[structopt(long = "virtual", default_value = "0")]
     virtual_node: u32,
     #[structopt(subcommand)]
@@ -33,7 +31,9 @@ pub async fn query(query: &Query) -> Result<()> {
         .next()
         .ok_or(anyhow!("no host found!"))?;
 
-    let start_key = chord::Key::new(&addr, query.virtual_node, query.num_bits);
+    let cfg = chord::rpc::config(&addr).await?;
+
+    let start_key = chord::Key::new(&addr, query.virtual_node, cfg.num_bits);
 
     let finger = chord::Finger {
         addr,
@@ -42,7 +42,7 @@ pub async fn query(query: &Query) -> Result<()> {
 
     match query.kind {
         QueryKind::Key { ref value, is_key } => {
-            query_key(finger, value, is_key, query.num_bits).await?;
+            query_key(finger, value, is_key, cfg.num_bits).await?;
         }
         QueryKind::Nodes => query_nodes(finger).await?,
     }
