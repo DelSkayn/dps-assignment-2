@@ -1,6 +1,4 @@
-use crate::chord;
 use anyhow::{anyhow, Context, Result};
-use sha2::Digest;
 use std::{collections::HashSet, net::SocketAddr};
 use structopt::StructOpt;
 use tokio::net;
