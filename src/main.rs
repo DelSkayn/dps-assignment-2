@@ -15,11 +15,10 @@ use structopt::StructOpt;
 mod control;
 mod query;
 
-mod chord;
 pub use chord::*;
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "cdfs")]
+#[structopt(name = "rchord")]
 enum Opt {
     /// Query the network for information.
     Query(query::Query),

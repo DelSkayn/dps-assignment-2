@@ -2,20 +2,17 @@ use sha2::{Digest, Sha256};
 use std::{fmt, net::SocketAddr};
 
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy, Serialize, Deserialize, Hash)]
-pub struct Key {
-    value: u128,
-    num_bits: u8,
-}
+pub struct Key(u128);
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:#X}", self.value)
+        write!(f, "{:#X}", self.0)
     }
 }
 
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "({:#X},{})", self.value, self.num_bits)
+        write!(f, "Key({:#X})", self.0)
     }
 }
 
@@ -34,10 +31,7 @@ impl Key {
         });
         let data = u128::from_le_bytes(data);
         let m = 1 << num_bits as u128;
-        Key {
-            value: data % m,
-            num_bits,
-        }
+        Key(data % m)
     }
 
     pub fn from_bytes(data: &[u8], num_bits: u8) -> Self {
@@ -50,14 +44,11 @@ impl Key {
         });
         let data = u128::from_le_bytes(data);
         let m = 1 << num_bits as u128;
-        Key {
-            value: data % m,
-            num_bits,
-        }
+        Key(data % m)
     }
 
-    pub fn from_number(v: u128, num_bits: u8) -> Self {
-        Key { value: v, num_bits }
+    pub fn from_number(v: u128) -> Self {
+        Key(v)
     }
 
     pub fn to(self, other: Self) -> KeyRange {
@@ -78,16 +69,9 @@ impl Key {
         }
     }
 
-    pub fn next(&self, next: u8) -> Self {
-        let m = 1 << self.num_bits as u128;
-        Key {
-            value: (self.value + (1 << next)) % m,
-            num_bits: self.num_bits,
-        }
-    }
-
-    pub fn num_bits(&self) -> u8 {
-        self.num_bits
+    pub fn next(&self, next: u8, num_bits: u8) -> Self {
+        let m = 1 << num_bits as u128;
+        Key((self.0 + (1 << next)) % m)
     }
 }
 

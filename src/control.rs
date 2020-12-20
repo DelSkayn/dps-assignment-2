@@ -32,7 +32,7 @@ pub async fn add(host: &str, value: &str, is_key: bool) -> Result<()> {
 
     let key = if is_key {
         let num: u128 = value.parse().context("parsing value to a key number")?;
-        chord::Key::from_number(num, cfg.num_bits)
+        chord::Key::from_number(num)
     } else {
         chord::Key::from_bytes(value.as_bytes(), cfg.num_bits)
     };
@@ -66,7 +66,7 @@ pub async fn get(host: &str, value: &str, is_key: bool) -> Result<()> {
 
     let key = if is_key {
         let num: u128 = value.parse().context("parsing value to a key number")?;
-        chord::Key::from_number(num, cfg.num_bits)
+        chord::Key::from_number(num)
     } else {
         chord::Key::from_bytes(value.as_bytes(), cfg.num_bits)
     };

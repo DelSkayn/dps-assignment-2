@@ -18,8 +18,6 @@ enum QueryKind {
 #[derive(Debug, StructOpt)]
 pub struct Query {
     node: String,
-    #[structopt(long = "virtual", default_value = "0")]
-    virtual_node: u32,
     #[structopt(subcommand)]
     kind: QueryKind,
 }
@@ -33,7 +31,7 @@ pub async fn query(query: &Query) -> Result<()> {
 
     let cfg = chord::rpc::config(&addr).await?;
 
-    let start_key = chord::Key::new(&addr, query.virtual_node, cfg.num_bits);
+    let start_key = chord::Key::new(&addr, 0, cfg.num_bits);
 
     let finger = chord::Finger {
         addr,
@@ -58,7 +56,7 @@ pub async fn query_key(
 ) -> Result<()> {
     let key = if is_key {
         let num: u128 = value.parse().context("parsing value to a key number")?;
-        chord::Key::from_number(num, num_bits)
+        chord::Key::from_number(num)
     } else {
         chord::Key::from_bytes(value.as_bytes(), num_bits)
     };
@@ -79,14 +77,16 @@ pub async fn query_key(
 pub async fn query_nodes(mut finger: chord::Finger) -> Result<()> {
     let mut reached = HashSet::new();
     reached.insert(finger.id);
+    let mut fingers = Vec::new();
     info!("querying all nodes, starting at {}", finger);
     loop {
         let successor = chord::rpc::successor(&finger).await?;
         finger = successor;
-        println!("{}", finger);
+        fingers.push(finger.clone());
         if !reached.insert(finger.id) {
             break;
         }
     }
+    println!("{}", serde_json::to_string_pretty(&fingers).unwrap());
     Ok(())
 }

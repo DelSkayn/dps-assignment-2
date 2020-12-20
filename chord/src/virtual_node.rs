@@ -1,6 +1,6 @@
 use rand::Rng;
 use std::{collections::VecDeque, fmt, mem, net::SocketAddr, time::Duration};
-use tokio::{stream::StreamExt, sync::Mutex, time};
+use tokio::{sync::Mutex, time};
 
 use super::{rpc, Config, Key, KeyRange};
 
@@ -164,7 +164,7 @@ impl VirtualNode {
     pub async fn insert_finger(&self, finger: Finger) {
         let mut lock = self.table.lock().await;
         for i in 0..lock.fingers.len() as u8 {
-            let finger_key = self.this.id.next(i + 1);
+            let finger_key = self.this.id.next(i + 1, self.num_bits);
             if finger.id.within(&self.this.id.to(finger_key)) && finger.id != finger_key {
                 break;
             }
@@ -329,7 +329,7 @@ impl VirtualNode {
         let mut interval = time::interval(self.interval);
         loop {
             let pick = rand::thread_rng().gen_range(0, self.num_bits - 1);
-            let key = self.this.id.next(pick + 1);
+            let key = self.this.id.next(pick + 1, self.num_bits);
             let finger = self.table.lock().await.fingers[pick as usize].clone();
             if let Some(x) = finger {
                 if let Err(_) = rpc::ping(&x).await {

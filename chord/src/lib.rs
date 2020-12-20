@@ -5,6 +5,13 @@ use tokio::{
     sync::{oneshot, Mutex},
 };
 
+#[macro_use]
+extern crate serde_derive;
+#[macro_use]
+extern crate anyhow;
+#[macro_use]
+extern crate log;
+
 mod key;
 pub mod rpc;
 mod virtual_node;
