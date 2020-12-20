@@ -1,6 +1,7 @@
 use anyhow::{Result, bail, Context};
 use std::time::Duration;
-use tokio::process::Command;
+use duct::cmd;
+use tokio::{net,time};
 
 
 pub async fn start( 
@@ -8,33 +9,49 @@ pub async fn start(
         num_bits: u8,
         num_successors: u32,
         num_virtual_nodes: u32,
-        update_interval: Duration) -> Result<()>{
+        update_interval: Duration,
+        port: u16
+        ) -> Result<()>{
 
-    let mut iter = nodes.into_iter();
+    let mut iter = nodes.iter();
     let main_node = if let Some(x) = iter.next(){
         x
     }else{
         bail!("No nodes provided, please provide at least a single node address")
     };
-    Command::new("ssh")
-        .arg(&main_node)
-        .arg(format!("rchord start {} -b {} -s {} --nvirtuals {} -i {}",main_node,num_bits, num_successors, num_virtual_nodes, humantime::format_duration(update_interval)))
-        .output()
-        .await
-        .with_context(|| format!("Failed to start bootstrap node on {}",main_node))?;
+    let start_cmd = format!("tmux new-session -d -s chord \"rchord start {}:{} -b {} -s {} --nvirtuals {} -i {}\""
+        ,&main_node
+        ,port
+        ,num_bits
+        ,num_successors
+        ,num_virtual_nodes
+        ,humantime::format_duration(update_interval));
 
-    let futures = iter.map(|x|
-        (Command::new("ssh")
-                .arg(&x)
-                .arg(format!("rchord connect {} {}",main_node,x))
-                .output(),
-                x)
-    );
-    for f in futures.into_iter(){
-        let node = f.1;
-        f.0.await
-        .with_context(|| format!("Failed to start normal node on {}",node))?;
+
+    cmd!("ssh",&main_node,start_cmd)
+        .run()
+        .with_context(||"failed to run bootstrap node start command")?;
+
+
+    for n in iter{
+        let command = format!("tmux new-session -d -s rchord connect {}:{} {}:{}",main_node,port,&n,port);
+        cmd!("ssh",&n,command)
+            .run()
+            .with_context(||format!("failed to run node start command on '{}'",n))?;
+
     }
+
+
+    info!("started nodes, giving them some time to get ready");
+    time::sleep(Duration::from_secs(1)).await;
+
+    info!("Pinging nodes");
+    for n in nodes{
+        info!("pinging {}",&n);
+        let addr = net::lookup_host(format!("{}:{}",n,port)).await?.next().unwrap();
+        chord::rpc::ping(&addr).await.with_context(|| format!("failed to connect to '{}' node might not have started", n))?;
+    }
+
     info!("finished, all nodes running");
     Ok(())
 }

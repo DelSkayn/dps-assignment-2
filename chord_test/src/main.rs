@@ -29,23 +29,28 @@ enum Opt {
         /// The time interval between the various update ticks performed by chord (default 2s)
         #[structopt(short = "i", long = "interval", parse(try_from_str = parse_duration))]
         update_interval: Option<Duration>,
+        /// port to run the chord protocol on (default 8080).
+        #[structopt(short = "p", long = "port")]
+        port: Option<u16>,
     }
 }
 
-#[tokio::main]
+#[tokio::main(worker_threads=1)]
 async fn main() -> Result<()> {
-    env_logger::init();
+    let env = env_logger::Env::new().filter_or("RUST_LOG","info");
+    env_logger::init_from_env(env);
     let opt = Opt::from_args();
     match opt{
         Opt::Start{
-            nodes, num_bits, num_successors, num_virtual_nodes, update_interval
+            nodes, num_bits, num_successors, num_virtual_nodes, update_interval, port
         } => {
             start::start(
                 nodes,
                 num_bits.unwrap_or(16),
                 num_successors.unwrap_or(4),
                 num_virtual_nodes.unwrap_or(4),
-                update_interval.unwrap_or(Duration::from_secs(2))
+                update_interval.unwrap_or(Duration::from_secs(2)),
+                port.unwrap_or(8080)
                 ).await?;
         }
     }

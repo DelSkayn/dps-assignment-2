@@ -144,8 +144,8 @@ pub async fn notify(finger: &Finger, of: Finger) -> Result<()> {
     }
 }
 
-pub async fn ping(finger: &Finger) -> Result<()> {
-    match call(&finger.addr, Request::Ping).await? {
+pub async fn ping(addr: &SocketAddr) -> Result<()> {
+    match call(addr, Request::Ping).await? {
         Ok(ResponseData::Pong) => Ok(()),
         x => panic!("invalid response: {:?}", x),
     }

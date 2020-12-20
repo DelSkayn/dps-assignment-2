@@ -4,24 +4,25 @@ use structopt::StructOpt;
 use tokio::net;
 
 #[derive(Debug, StructOpt)]
-enum QueryKind {
+pub enum Query {
     Key {
+        node: String,
         value: String,
         #[structopt(short = "k", long = "key")]
         is_key: bool,
     },
-    Nodes,
-}
-
-#[derive(Debug, StructOpt)]
-pub struct Query {
-    node: String,
-    #[structopt(subcommand)]
-    kind: QueryKind,
+    Nodes {
+        node: String,
+    },
 }
 
 pub async fn query(query: &Query) -> Result<()> {
-    let addr = net::lookup_host(&query.node)
+    let node = match query {
+        Query::Key { node, .. } => node,
+        Query::Nodes { node } => node,
+    };
+
+    let addr = net::lookup_host(node)
         .await
         .context("looking up node address")?
         .next()
@@ -36,11 +37,13 @@ pub async fn query(query: &Query) -> Result<()> {
         id: start_key,
     };
 
-    match query.kind {
-        QueryKind::Key { ref value, is_key } => {
-            query_key(finger, value, is_key, cfg.num_bits).await?;
+    match query {
+        Query::Key {
+            ref value, is_key, ..
+        } => {
+            query_key(finger, value, *is_key, cfg.num_bits).await?;
         }
-        QueryKind::Nodes => query_nodes(finger).await?,
+        Query::Nodes { .. } => query_nodes(finger).await?,
     }
 
     Ok(())

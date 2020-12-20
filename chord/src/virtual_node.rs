@@ -198,7 +198,7 @@ impl VirtualNode {
                     if x.id.within(&ran) {
                         let x = x.clone();
                         mem::drop(lock);
-                        if let Ok(_) = rpc::ping(&x).await {
+                        if let Ok(_) = rpc::ping(&x.addr).await {
                             return x;
                         } else {
                             self.invalidate_node(x.id).await;
@@ -256,7 +256,7 @@ impl VirtualNode {
         if let Some(x) = lock.predecessor.clone() {
             // Avoid holding onto the lock across an rpc call:
             mem::drop(lock);
-            if let Ok(_) = rpc::ping(&x).await {
+            if let Ok(_) = rpc::ping(&x.addr).await {
                 let mut lock = self.table.lock().await;
                 let range = lock.predecessor.as_ref().unwrap().id.to(self.this.id);
                 if predecessor.id.within(&range) {
@@ -332,7 +332,7 @@ impl VirtualNode {
             let key = self.this.id.next(pick + 1, self.num_bits);
             let finger = self.table.lock().await.fingers[pick as usize].clone();
             if let Some(x) = finger {
-                if let Err(_) = rpc::ping(&x).await {
+                if let Err(_) = rpc::ping(&x.addr).await {
                     self.invalidate_node(x.id).await;
                 }
             }
