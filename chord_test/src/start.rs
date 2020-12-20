@@ -1,5 +1,5 @@
 use anyhow::{Result, bail, Context};
-use std::time::Duration;
+use std::{str,time::Duration};
 use duct::cmd;
 use tokio::{net,time};
 
@@ -19,7 +19,14 @@ pub async fn start(
     }else{
         bail!("No nodes provided, please provide at least a single node address")
     };
-    let start_cmd = format!("tmux new-session -d -s chord \"rchord start {}:{} -b {} -s {} --nvirtuals {} -i {}\""
+    let program = cmd!("which","rchord").stdout_capture().run().context("could not find rchord")?;
+    if !program.status.success(){
+        bail!("could not find rchord binary")
+    }
+    let program = str::from_utf8(&program.stdout).unwrap().trim().to_string();
+
+    let start_cmd = format!("tmux new-session -d -s chord \"{} start {}:{} -b {} -s {} --nvirtuals {} -i {}\""
+        ,program
         ,&main_node
         ,port
         ,num_bits
@@ -28,14 +35,16 @@ pub async fn start(
         ,humantime::format_duration(update_interval));
 
 
-    cmd!("ssh",&main_node,start_cmd)
+    dbg!(cmd!("ssh",&main_node,start_cmd))
+        .env("RUST_LOG","trace")
         .run()
         .with_context(||"failed to run bootstrap node start command")?;
 
 
     for n in iter{
-        let command = format!("tmux new-session -d -s rchord connect {}:{} {}:{}",main_node,port,&n,port);
-        cmd!("ssh",&n,command)
+        let command = format!("tmux new-session -d -s chord \"{} connect {}:{} {}:{}\"",program,&n,port,main_node,port);
+        dbg!(cmd!("ssh",&n,command))
+            .env("RUST_LOG","trace")
             .run()
             .with_context(||format!("failed to run node start command on '{}'",n))?;
 
