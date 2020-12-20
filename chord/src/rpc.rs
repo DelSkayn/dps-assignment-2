@@ -7,6 +7,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::{TcpListener, TcpStream},
+    sync::{mpsc, oneshot, Mutex},
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -92,7 +93,20 @@ where
     Ok(bincode::deserialize(&buf)?)
 }
 
-async fn call(addr: &SocketAddr, req: Request) -> Result<Response> {
+async fn call(addr: &SocketAddr, req: Request, local: Option<&Local>) -> Result<Response> {
+    if let Some(x) = local {
+        if x.addr == *addr {
+            let (send, recv) = oneshot::channel();
+            x.send
+                .send(LocalRequest {
+                    request: req,
+                    response: send,
+                })
+                .await
+                .unwrap();
+            return Ok(recv.await.unwrap());
+        }
+    }
     trace!("call: {:?}", req);
     let stream = TcpStream::connect(addr).await?;
     let mut stream = BufStream::new(stream);
@@ -100,63 +114,74 @@ async fn call(addr: &SocketAddr, req: Request) -> Result<Response> {
     Ok(recv(&mut stream).await?)
 }
 
-pub async fn successor(finger: &Finger) -> Result<Finger> {
+pub async fn successor(finger: &Finger, local: Option<&Local>) -> Result<Finger> {
     let req = Request::Node {
         which: finger.id,
         request: NodeRequest::Successor,
     };
-    match call(&finger.addr, req).await? {
+    match call(&finger.addr, req, local).await? {
         Ok(ResponseData::Successor(x)) => Ok(x),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn find_successor(finger: &Finger, key: Key) -> Result<Option<Finger>> {
+pub async fn find_successor(
+    finger: &Finger,
+    key: Key,
+    local: Option<&Local>,
+) -> Result<Option<Finger>> {
     let req = Request::Node {
         which: finger.id,
         request: NodeRequest::FindSuccessor(key),
     };
-    match call(&finger.addr, req).await? {
+    match call(&finger.addr, req, local).await? {
         Ok(ResponseData::FindSuccessor(x)) => Ok(x),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn find_closest_predecessor(finger: &Finger, key: Key) -> Result<Finger> {
+pub async fn find_closest_predecessor(
+    finger: &Finger,
+    key: Key,
+    local: Option<&Local>,
+) -> Result<Finger> {
     let req = Request::Node {
         which: finger.id,
         request: NodeRequest::FindClosestPredecessor(key),
     };
-    match call(&finger.addr, req).await? {
+    match call(&finger.addr, req, local).await? {
         Ok(ResponseData::FindClosestPredecessor(x)) => Ok(x),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn notify(finger: &Finger, of: Finger) -> Result<()> {
+pub async fn notify(finger: &Finger, of: Finger, local: Option<&Local>) -> Result<()> {
     let req = Request::Node {
         which: finger.id,
         request: NodeRequest::Notify(of),
     };
-    match call(&finger.addr, req).await? {
+    match call(&finger.addr, req, local).await? {
         Ok(ResponseData::Notify) => Ok(()),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn ping(addr: &SocketAddr) -> Result<()> {
-    match call(addr, Request::Ping).await? {
+pub async fn ping(addr: &SocketAddr, local: Option<&Local>) -> Result<()> {
+    match call(addr, Request::Ping, local).await? {
         Ok(ResponseData::Pong) => Ok(()),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn stabilize_info(finger: &Finger) -> Result<(Option<Finger>, VecDeque<Finger>)> {
+pub async fn stabilize_info(
+    finger: &Finger,
+    local: Option<&Local>,
+) -> Result<(Option<Finger>, VecDeque<Finger>)> {
     let req = Request::Node {
         which: finger.id,
         request: NodeRequest::Stablize,
     };
-    match call(&finger.addr, req).await? {
+    match call(&finger.addr, req, local).await? {
         Ok(ResponseData::Stablize {
             predecessor,
             successors,
@@ -165,7 +190,7 @@ pub async fn stabilize_info(finger: &Finger) -> Result<(Option<Finger>, VecDeque
     }
 }
 
-pub async fn quit(addr: &SocketAddr) -> Result<()> {
+pub async fn quit(addr: &SocketAddr, _local: Option<&Local>) -> Result<()> {
     let stream = TcpStream::connect(addr).await?;
     let mut stream = BufStream::new(stream);
     let req = Request::Quit;
@@ -174,20 +199,21 @@ pub async fn quit(addr: &SocketAddr) -> Result<()> {
     Ok(())
 }
 
-pub async fn config(addr: &SocketAddr) -> Result<super::Config> {
-    match call(addr, Request::Config).await? {
+pub async fn config(addr: &SocketAddr, local: Option<&Local>) -> Result<super::Config> {
+    match call(addr, Request::Config, local).await? {
         Ok(ResponseData::Config(x)) => Ok(x),
         x => panic!("invalid response: {:?}", x),
     }
 }
 
-pub async fn transfer_keys(finger: &Finger, keys: Vec<Key>) -> Result<()> {
+pub async fn transfer_keys(finger: &Finger, keys: Vec<Key>, local: Option<&Local>) -> Result<()> {
     match call(
         &finger.addr,
         Request::Node {
             which: finger.id,
             request: NodeRequest::TransferKeys(keys),
         },
+        local,
     )
     .await?
     {
@@ -196,13 +222,14 @@ pub async fn transfer_keys(finger: &Finger, keys: Vec<Key>) -> Result<()> {
     }
 }
 
-pub async fn add_key(finger: &Finger, key: Key) -> Result<()> {
+pub async fn add_key(finger: &Finger, key: Key, local: Option<&Local>) -> Result<()> {
     match call(
         &finger.addr,
         Request::Node {
             which: finger.id,
             request: NodeRequest::AddKey(key),
         },
+        local,
     )
     .await?
     {
@@ -211,13 +238,14 @@ pub async fn add_key(finger: &Finger, key: Key) -> Result<()> {
     }
 }
 
-pub async fn contains_key(finger: &Finger, find: Key) -> Result<bool> {
+pub async fn contains_key(finger: &Finger, find: Key, local: Option<&Local>) -> Result<bool> {
     match call(
         &finger.addr,
         Request::Node {
             which: finger.id,
             request: NodeRequest::Contains(find),
         },
+        local,
     )
     .await?
     {
@@ -226,21 +254,69 @@ pub async fn contains_key(finger: &Finger, find: Key) -> Result<bool> {
     }
 }
 
-pub async fn handle_rpc<H, F>(listener: TcpListener, handler: H) -> Result<()>
-where
-    H: Fn(Request) -> F + Send + 'static + Sync,
-    F: Future<Output = Result<Response>> + Send,
-{
-    let handler = Arc::new(handler);
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        trace!("incomming connection from: {}", addr);
-        let mut stream = BufStream::new(stream);
-        let handler = handler.clone();
-        tokio::spawn(async move {
-            let req: Request = recv(&mut stream).await?;
-            let res = handler(req).await?;
-            send(&mut stream, &res).await
-        });
+#[derive(Debug)]
+struct LocalRequest {
+    request: Request,
+    response: oneshot::Sender<Response>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Local {
+    send: mpsc::Sender<LocalRequest>,
+    addr: SocketAddr,
+}
+
+#[derive(Debug)]
+pub struct Server {
+    local_requests: Mutex<mpsc::Receiver<LocalRequest>>,
+    local: Local,
+    addr: SocketAddr,
+}
+
+impl Server {
+    pub fn new(addr: SocketAddr) -> Self {
+        let (send, recv) = mpsc::channel(128);
+        Server {
+            addr,
+            local_requests: Mutex::new(recv),
+            local: Local { send, addr },
+        }
+    }
+
+    pub fn local(&self) -> Local {
+        self.local.clone()
+    }
+
+    pub async fn handle<H, F>(&self, listener: TcpListener, handler: H) -> Result<()>
+    where
+        H: Fn(Request) -> F + Send + 'static + Sync,
+        F: Future<Output = Result<Response>> + Send,
+    {
+        let handler = Arc::new(handler);
+        let mut lock = self.local_requests.lock().await;
+        loop {
+            tokio::select! {
+                x = listener.accept() => {
+                    let (stream, addr) = x?;
+                    trace!("incomming connection from: {}", addr);
+                    let mut stream = BufStream::new(stream);
+                    let handler = handler.clone();
+                    tokio::spawn(async move {
+                        let req: Request = recv(&mut stream).await?;
+                        let res = handler(req).await?;
+                        send(&mut stream, &res).await
+                    });
+                }
+                x = lock.recv() => {
+                    let x = x.unwrap();
+                    let handler = handler.clone();
+                    tokio::spawn(async move {
+                        let res = handler(x.request).await?;
+                        x.response.send(res).unwrap();
+                        Result::<()>::Ok(())
+                    });
+                }
+            }
+        }
     }
 }

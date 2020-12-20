@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+
 use anyhow::Result;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
@@ -33,6 +36,7 @@ struct Inner {
     resolved_host: SocketAddr,
     virtual_nodes: Vec<VirtualNode>,
     quit: Mutex<Option<oneshot::Sender<()>>>,
+    rpc: rpc::Server,
 }
 
 #[derive(Debug)]
@@ -56,7 +60,7 @@ impl Chord {
             .ok_or(anyhow!("failed to find an address for host"))?;
 
         info!("connecting to {}", bootstrap);
-        let config = rpc::config(&bootstrap).await?;
+        let config = rpc::config(&bootstrap, None).await?;
         let chord = Self::initialize_bootstrap(config, host, bootstrap).await?;
         chord.start_loop().await
     }
@@ -75,6 +79,7 @@ impl Chord {
     }
 
     fn initialize_starter(cfg: Config, host: SocketAddr) -> Chord {
+        let rpc = rpc::Server::new(host);
         let cfg_borrow = &cfg;
         let mut keys: Vec<_> = (0..cfg.num_virtual_nodes)
             .map(|x| Key::new(&host, x, cfg_borrow.num_bits))
@@ -91,7 +96,7 @@ impl Chord {
                     id: keys[x as usize],
                     addr: host.clone(),
                 };
-                VirtualNode::new(this, successor, cfg_borrow)
+                VirtualNode::new(this, successor, cfg_borrow, rpc.local())
             })
             .collect();
         let (sender, recv) = oneshot::channel();
@@ -100,6 +105,7 @@ impl Chord {
             cfg,
             resolved_host: host,
             virtual_nodes,
+            rpc,
         };
         Chord {
             quit: recv,
@@ -112,6 +118,7 @@ impl Chord {
         host: SocketAddr,
         bootstrap: SocketAddr,
     ) -> Result<Chord> {
+        let server = rpc::Server::new(host);
         let cfg_borrow = &cfg;
         let mut keys: Vec<_> = (0..cfg.num_virtual_nodes)
             .map(|x| Key::new(&host, x, cfg_borrow.num_bits))
@@ -123,12 +130,17 @@ impl Chord {
         };
         let mut virtual_nodes = Vec::new();
         for k in keys.iter() {
-            let successor = rpc::find_successor(&bootstrap, *k).await?;
+            let successor = rpc::find_successor(&bootstrap, *k, None).await?;
             if let Some(x) = successor {
                 if x.id == *k {
                     bail!("node with id {} already in the network", x.id)
                 }
-                virtual_nodes.push(VirtualNode::new(Finger { id: *k, addr: host }, x, &cfg));
+                virtual_nodes.push(VirtualNode::new(
+                    Finger { id: *k, addr: host },
+                    x,
+                    &cfg,
+                    server.local(),
+                ));
             } else {
                 bail!("could not find successor!")
             }
@@ -139,6 +151,7 @@ impl Chord {
             cfg,
             resolved_host: host,
             virtual_nodes,
+            rpc: server,
         };
         Ok(Chord {
             quit: recv,
@@ -176,66 +189,67 @@ impl Inner {
         socket.bind(self.resolved_host)?;
         let listener = socket.listen(128)?;
         let this = self.clone();
-        rpc::handle_rpc(listener, move |req| {
-            let this = this.clone();
-            async move {
-                let res = match req {
-                    rpc::Request::Ping => Ok(rpc::ResponseData::Pong),
-                    rpc::Request::Quit => {
-                        this.quit.lock().await.take().map(|x| x.send(()));
-                        Ok(rpc::ResponseData::Quit)
-                    }
-                    rpc::Request::Config => Ok(rpc::ResponseData::Config(this.cfg.clone())),
-                    rpc::Request::Node { which, request } => {
-                        let node = match this
-                            .virtual_nodes
-                            .binary_search_by_key(&which, |x| x.this.id)
-                        {
-                            Ok(x) => &this.virtual_nodes[x],
-                            Err(_) => return Ok(Err(rpc::ResponseError::NoSuchNode)),
-                        };
-                        match request {
-                            rpc::NodeRequest::Stablize => {
-                                let (predecessor, successors) = node.get_stablize_info().await;
-                                Ok(rpc::ResponseData::Stablize {
-                                    predecessor,
-                                    successors,
-                                })
-                            }
-                            rpc::NodeRequest::Notify(predecessor) => {
-                                node.notify(predecessor.clone()).await;
-                                Ok(rpc::ResponseData::Notify)
-                            }
-                            rpc::NodeRequest::Successor => {
-                                Ok(rpc::ResponseData::Successor(node.get_successor().await))
-                            }
-                            rpc::NodeRequest::FindClosestPredecessor(x) => {
-                                let res = node.find_closest_predecessor(x).await;
-                                Ok(rpc::ResponseData::FindClosestPredecessor(res))
-                            }
-                            rpc::NodeRequest::FindSuccessor(x) => {
-                                let res = node.find_successor(x).await;
-                                Ok(rpc::ResponseData::FindSuccessor(res))
-                            }
-                            rpc::NodeRequest::TransferKeys(x) => {
-                                node.transver_keys(x).await;
-                                Ok(rpc::ResponseData::TransferKeys)
-                            }
-                            rpc::NodeRequest::AddKey(key) => {
-                                node.add_key(key).await;
-                                Ok(rpc::ResponseData::AddKey)
-                            }
-                            rpc::NodeRequest::Contains(key) => {
-                                let res = node.contains_key(key).await;
-                                Ok(rpc::ResponseData::Contains(res))
-                            }
-                            _ => todo!(),
+        self.rpc
+            .handle(listener, move |req| {
+                let this = this.clone();
+                async move {
+                    let res = match req {
+                        rpc::Request::Ping => Ok(rpc::ResponseData::Pong),
+                        rpc::Request::Quit => {
+                            this.quit.lock().await.take().map(|x| x.send(()));
+                            Ok(rpc::ResponseData::Quit)
                         }
-                    }
-                };
-                Ok(res)
-            }
-        })
-        .await
+                        rpc::Request::Config => Ok(rpc::ResponseData::Config(this.cfg.clone())),
+                        rpc::Request::Node { which, request } => {
+                            let node = match this
+                                .virtual_nodes
+                                .binary_search_by_key(&which, |x| x.this.id)
+                            {
+                                Ok(x) => &this.virtual_nodes[x],
+                                Err(_) => return Ok(Err(rpc::ResponseError::NoSuchNode)),
+                            };
+                            match request {
+                                rpc::NodeRequest::Stablize => {
+                                    let (predecessor, successors) = node.get_stablize_info().await;
+                                    Ok(rpc::ResponseData::Stablize {
+                                        predecessor,
+                                        successors,
+                                    })
+                                }
+                                rpc::NodeRequest::Notify(predecessor) => {
+                                    node.notify(predecessor.clone()).await;
+                                    Ok(rpc::ResponseData::Notify)
+                                }
+                                rpc::NodeRequest::Successor => {
+                                    Ok(rpc::ResponseData::Successor(node.get_successor().await))
+                                }
+                                rpc::NodeRequest::FindClosestPredecessor(x) => {
+                                    let res = node.find_closest_predecessor(x).await;
+                                    Ok(rpc::ResponseData::FindClosestPredecessor(res))
+                                }
+                                rpc::NodeRequest::FindSuccessor(x) => {
+                                    let res = node.find_successor(x).await;
+                                    Ok(rpc::ResponseData::FindSuccessor(res))
+                                }
+                                rpc::NodeRequest::TransferKeys(x) => {
+                                    node.transver_keys(x).await;
+                                    Ok(rpc::ResponseData::TransferKeys)
+                                }
+                                rpc::NodeRequest::AddKey(key) => {
+                                    node.add_key(key).await;
+                                    Ok(rpc::ResponseData::AddKey)
+                                }
+                                rpc::NodeRequest::Contains(key) => {
+                                    let res = node.contains_key(key).await;
+                                    Ok(rpc::ResponseData::Contains(res))
+                                }
+                                _ => todo!(),
+                            }
+                        }
+                    };
+                    Ok(res)
+                }
+            })
+            .await
     }
 }

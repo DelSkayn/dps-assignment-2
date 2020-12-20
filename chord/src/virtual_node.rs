@@ -99,13 +99,15 @@ pub struct VirtualNode {
     pub this: Finger,
     pub table: Mutex<FingerTable>,
     pub key_set: Mutex<KeySet>,
+    local: rpc::Local,
 }
 
 impl VirtualNode {
-    pub fn new(this: Finger, successor: Finger, cfg: &Config) -> Self {
+    pub fn new(this: Finger, successor: Finger, cfg: &Config, local: rpc::Local) -> Self {
         let fingers = vec![None; cfg.num_bits as usize - 1];
         VirtualNode {
             interval: cfg.update_interval,
+            local,
             this,
             num_bits: cfg.num_bits,
             num_successors: cfg.num_successors,
@@ -198,7 +200,7 @@ impl VirtualNode {
                     if x.id.within(&ran) {
                         let x = x.clone();
                         mem::drop(lock);
-                        if let Ok(_) = rpc::ping(&x.addr).await {
+                        if let Ok(_) = rpc::ping(&x.addr, Some(&self.local)).await {
                             return x;
                         } else {
                             self.invalidate_node(x.id).await;
@@ -221,7 +223,7 @@ impl VirtualNode {
             return Some(succ);
         }
         let mut closest = self.find_closest_predecessor(key).await;
-        let mut succ = match rpc::successor(&closest).await {
+        let mut succ = match rpc::successor(&closest, Some(&self.local)).await {
             Ok(x) => x,
             Err(_) => {
                 self.invalidate_node(succ.id).await;
@@ -229,14 +231,14 @@ impl VirtualNode {
             }
         };
         while !key.within(&closest.id.to(succ.id)) {
-            closest = match rpc::find_closest_predecessor(&closest, key).await {
+            closest = match rpc::find_closest_predecessor(&closest, key, Some(&self.local)).await {
                 Ok(x) => x,
                 Err(_) => {
                     self.invalidate_node(closest.id).await;
                     return None;
                 }
             };
-            let tmp = match rpc::successor(&closest).await {
+            let tmp = match rpc::successor(&closest, Some(&self.local)).await {
                 Ok(x) => x,
                 Err(_) => {
                     self.invalidate_node(closest.id).await;
@@ -256,7 +258,7 @@ impl VirtualNode {
         if let Some(x) = lock.predecessor.clone() {
             // Avoid holding onto the lock across an rpc call:
             mem::drop(lock);
-            if let Ok(_) = rpc::ping(&x.addr).await {
+            if let Ok(_) = rpc::ping(&x.addr, Some(&self.local)).await {
                 let mut lock = self.table.lock().await;
                 let range = lock.predecessor.as_ref().unwrap().id.to(self.this.id);
                 if predecessor.id.within(&range) {
@@ -275,7 +277,7 @@ impl VirtualNode {
             let range = x.id.to(self.this.id);
             let keys = self.key_set.lock().await.remove_not_in_range(&range);
             if !keys.is_empty() {
-                match rpc::transfer_keys(&x, keys.clone()).await {
+                match rpc::transfer_keys(&x, keys.clone(), Some(&self.local)).await {
                     Ok(()) => {}
                     Err(_) => {
                         self.table.lock().await.predecessor = None;
@@ -290,13 +292,14 @@ impl VirtualNode {
         let mut interval = time::interval(self.interval);
         loop {
             let succ = self.get_successor().await;
-            let (new_succ, mut successors) = match rpc::stabilize_info(&succ).await {
-                Ok(x) => x,
-                Err(_) => {
-                    self.invalidate_successor(&succ).await;
-                    continue;
-                }
-            };
+            let (new_succ, mut successors) =
+                match rpc::stabilize_info(&succ, Some(&self.local)).await {
+                    Ok(x) => x,
+                    Err(_) => {
+                        self.invalidate_successor(&succ).await;
+                        continue;
+                    }
+                };
             // Successor cannot be its own predecessor
             successors.push_front(succ.clone());
             if successors.len() > self.num_successors as usize {
@@ -306,7 +309,9 @@ impl VirtualNode {
             let range = self.this.id.to(succ.id);
             if let Some(new_succ) = new_succ {
                 if new_succ.id.within(&range) {
-                    if let Ok((_, mut successors)) = rpc::stabilize_info(&new_succ).await {
+                    if let Ok((_, mut successors)) =
+                        rpc::stabilize_info(&new_succ, Some(&self.local)).await
+                    {
                         successors.push_front(new_succ);
                         if successors.len() > self.num_successors as usize {
                             successors.pop_back();
@@ -316,7 +321,9 @@ impl VirtualNode {
                 }
             }
             let succ = self.get_successor().await;
-            rpc::notify(&succ, self.this.clone()).await.ok();
+            rpc::notify(&succ, self.this.clone(), Some(&self.local))
+                .await
+                .ok();
             debug!("{:#?}", self);
             let random_interval = self.interval.div_f32(2.0);
             let random_interval = random_interval.mul_f32(rand::thread_rng().gen());
@@ -332,7 +339,7 @@ impl VirtualNode {
             let key = self.this.id.next(pick + 1, self.num_bits);
             let finger = self.table.lock().await.fingers[pick as usize].clone();
             if let Some(x) = finger {
-                if let Err(_) = rpc::ping(&x.addr).await {
+                if let Err(_) = rpc::ping(&x.addr, Some(&self.local)).await {
                     self.invalidate_node(x.id).await;
                 }
             }

@@ -28,7 +28,7 @@ pub async fn query(query: &Query) -> Result<()> {
         .next()
         .ok_or(anyhow!("no host found!"))?;
 
-    let cfg = chord::rpc::config(&addr).await?;
+    let cfg = chord::rpc::config(&addr, None).await?;
 
     let start_key = chord::Key::new(&addr, 0, cfg.num_bits);
 
@@ -66,7 +66,7 @@ pub async fn query_key(
         "connecting to {} to lookup \"{}\"={}",
         finger.addr, value, key
     );
-    match chord::rpc::find_successor(&finger, key).await {
+    match chord::rpc::find_successor(&finger, key, None).await {
         Ok(Some(x)) => println!("found key in {}", x),
         Ok(None) => println!("failed to find key, network might be in unstable state"),
         Err(e) => return Err(e),
@@ -81,7 +81,7 @@ pub async fn query_nodes(mut finger: chord::Finger) -> Result<()> {
     let mut fingers = Vec::new();
     info!("querying all nodes, starting at {}", finger);
     loop {
-        let successor = chord::rpc::successor(&finger).await?;
+        let successor = chord::rpc::successor(&finger, None).await?;
         finger = successor;
         fingers.push(finger.clone());
         if !reached.insert(finger.id) {
