@@ -2,10 +2,10 @@
 #![allow(unused_imports)]
 
 use anyhow::Result;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::TcpSocket,
-    sync::{oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex},
 };
 
 #[macro_use]
@@ -21,6 +21,12 @@ mod virtual_node;
 
 pub use key::{Key, KeyRange};
 pub use virtual_node::{Finger, FingerTable, VirtualNode};
+
+#[derive(Debug)]
+pub enum KeyEvent {
+    Added(Key),
+    Removed(Key),
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
@@ -41,12 +47,13 @@ struct Inner {
 
 #[derive(Debug)]
 pub struct Chord {
+    key_channel: mpsc::Receiver<KeyEvent>,
     inner: Arc<Inner>,
     quit: oneshot::Receiver<()>,
 }
 
 impl Chord {
-    pub async fn connect(host: &str, bootstrap: &str) -> Result<()> {
+    pub async fn connect(host: &str, bootstrap: &str) -> Result<Chord> {
         let host = tokio::net::lookup_host(host)
             .await?
             .next()
@@ -61,11 +68,10 @@ impl Chord {
 
         info!("connecting to {}", bootstrap);
         let config = rpc::config(&bootstrap, None).await?;
-        let chord = Self::initialize_bootstrap(config, host, bootstrap).await?;
-        chord.start_loop().await
+        Self::initialize_bootstrap(config, host, bootstrap).await
     }
 
-    pub async fn start(host: &str, cfg: Config) -> Result<()> {
+    pub async fn start(host: &str, cfg: Config) -> Result<Chord> {
         let host = tokio::net::lookup_host(host)
             .await?
             .next()
@@ -73,13 +79,12 @@ impl Chord {
 
         info!("starting node on {}", host);
 
-        let chord = Self::initialize_starter(cfg, host);
-        chord.start_loop().await?;
-        Ok(())
+        Ok(Self::initialize_starter(cfg, host))
     }
 
     fn initialize_starter(cfg: Config, host: SocketAddr) -> Chord {
         let rpc = rpc::Server::new(host);
+        let (key_send, key_recv) = mpsc::channel((cfg.num_virtual_nodes * 8) as usize);
         let cfg_borrow = &cfg;
         let mut keys: Vec<_> = (0..cfg.num_virtual_nodes)
             .map(|x| Key::new(&host, x, cfg_borrow.num_bits))
@@ -96,7 +101,7 @@ impl Chord {
                     id: keys[x as usize],
                     addr: host.clone(),
                 };
-                VirtualNode::new(this, successor, cfg_borrow, rpc.local())
+                VirtualNode::new(this, successor, cfg_borrow, key_send.clone(), rpc.local())
             })
             .collect();
         let (sender, recv) = oneshot::channel();
@@ -108,6 +113,7 @@ impl Chord {
             rpc,
         };
         Chord {
+            key_channel: key_recv,
             quit: recv,
             inner: Arc::new(inner),
         }
@@ -119,6 +125,7 @@ impl Chord {
         bootstrap: SocketAddr,
     ) -> Result<Chord> {
         let server = rpc::Server::new(host);
+        let (key_send, key_recv) = mpsc::channel((cfg.num_virtual_nodes * 8) as usize);
         let cfg_borrow = &cfg;
         let mut keys: Vec<_> = (0..cfg.num_virtual_nodes)
             .map(|x| Key::new(&host, x, cfg_borrow.num_bits))
@@ -139,6 +146,7 @@ impl Chord {
                     Finger { id: *k, addr: host },
                     x,
                     &cfg,
+                    key_send.clone(),
                     server.local(),
                 ));
             } else {
@@ -154,26 +162,44 @@ impl Chord {
             rpc: server,
         };
         Ok(Chord {
+            key_channel: key_recv,
             quit: recv,
             inner: Arc::new(inner),
         })
     }
 
-    pub async fn start_loop(self) -> Result<()> {
+    pub async fn start_loop<F, R>(self, f: F) -> Result<()>
+    where
+        F: Fn(KeyEvent) -> R + Send + 'static,
+        R: Future<Output = ()> + Send + 'static,
+    {
         for i in 0..self.inner.virtual_nodes.len() {
             let clone = self.inner.clone();
             tokio::spawn(async move { clone.virtual_nodes[i].stabilize().await });
             let clone = self.inner.clone();
             tokio::spawn(async move { clone.virtual_nodes[i].fix_fingers().await });
         }
+        let mut key_channel = self.key_channel;
+        let handle = tokio::spawn(async move {
+            loop {
+                if let Some(x) = key_channel.recv().await {
+                    tokio::spawn(f(x));
+                } else {
+                    return;
+                }
+            }
+        });
+
         tokio::select! {
             _ = self.quit =>{
                 info!("quit requested, exiting!");
                 return Ok(())
             }
             x = self.inner.clone().run_loop() => {
-                error!("run loop quit unexpectedly");
                 return x;
+            }
+            _ = handle => {
+                bail!("key handle loop quit unexpectedly!");
             }
         }
     }
@@ -243,7 +269,10 @@ impl Inner {
                                     let res = node.contains_key(key).await;
                                     Ok(rpc::ResponseData::Contains(res))
                                 }
-                                _ => todo!(),
+                                rpc::NodeRequest::Info => {
+                                    let res = node.get_info().await;
+                                    Ok(rpc::ResponseData::Info(res))
+                                }
                             }
                         }
                     };

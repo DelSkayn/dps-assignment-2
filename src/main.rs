@@ -73,10 +73,16 @@ async fn main() -> Result<()> {
                 num_virtual_nodes: num_virtual_nodes.unwrap_or(4),
             };
             info!("starting");
-            return chord::Chord::start(&host, cfg).await;
+            let c = chord::Chord::start(&host, cfg).await?;
+            return c.start_loop(|key| async move {
+                info!("key event: {:?}",key);
+            }).await;
         }
         Opt::Connect { host, bootstrap } => {
-            return chord::Chord::connect(&host, &bootstrap).await;
+            let c = chord::Chord::connect(&host, &bootstrap).await?;
+            return c.start_loop(|key| async move {
+                info!("key event: {:?}",key);
+            }).await;
         }
         Opt::Query(x) => match query::query(&x).await {
             Ok(()) => {}

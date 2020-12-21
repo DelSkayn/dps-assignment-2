@@ -24,26 +24,25 @@ pub enum NodeRequest {
     Notify(Finger),
     /// Add a key to the node
     AddKey(Key),
-    /// Replicate a key to other nodes
-    AddKeyReplicate(Key),
     /// Transfer the responisibility for a set of keys to a other node
     Contains(Key),
     /// Transfer the responisibility for a set of keys to a other node
     TransferKeys(Vec<Key>),
-    /// Check if a key is within the right range according
-    InRange {
-        find: Key,
-        this: Key,
-    },
     /// Retrieve the successor of a node
     Successor,
     /// Stablize the node
     Stablize,
     FindClosestPredecessor(Key),
     FindSuccessor(Key),
+    Info,
 }
 
 pub type Response = StdResult<ResponseData, ResponseError>;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NodeInfo {
+    pub num_keys: usize,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ResponseData {
@@ -62,6 +61,7 @@ pub enum ResponseData {
     },
     FindClosestPredecessor(Finger),
     FindSuccessor(Option<Finger>),
+    Info(NodeInfo),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -250,6 +250,22 @@ pub async fn contains_key(finger: &Finger, find: Key, local: Option<&Local>) -> 
     .await?
     {
         Ok(ResponseData::Contains(x)) => Ok(x),
+        x => panic!("invalid response: {:?}", x),
+    }
+}
+
+pub async fn info(finger: &Finger, local: Option<&Local>) -> Result<NodeInfo> {
+    match call(
+        &finger.addr,
+        Request::Node {
+            which: finger.id,
+            request: NodeRequest::Info,
+        },
+        local,
+    )
+    .await?
+    {
+        Ok(ResponseData::Info(x)) => Ok(x),
         x => panic!("invalid response: {:?}", x),
     }
 }

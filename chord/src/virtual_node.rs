@@ -1,8 +1,11 @@
 use rand::Rng;
 use std::{collections::VecDeque, fmt, mem, net::SocketAddr, time::Duration};
-use tokio::{sync::Mutex, time};
+use tokio::{
+    sync::{mpsc, Mutex},
+    time,
+};
 
-use super::{rpc, Config, Key, KeyRange};
+use super::{rpc, Config, Key, KeyEvent, KeyRange};
 
 #[derive(Debug)]
 pub struct KeySet(Vec<Key>);
@@ -48,6 +51,10 @@ impl KeySet {
 
     pub fn contains(&self, k: Key) -> bool {
         self.0.binary_search(&k).is_ok()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
@@ -99,13 +106,21 @@ pub struct VirtualNode {
     pub this: Finger,
     pub table: Mutex<FingerTable>,
     pub key_set: Mutex<KeySet>,
+    key_event: mpsc::Sender<KeyEvent>,
     local: rpc::Local,
 }
 
 impl VirtualNode {
-    pub fn new(this: Finger, successor: Finger, cfg: &Config, local: rpc::Local) -> Self {
+    pub fn new(
+        this: Finger,
+        successor: Finger,
+        cfg: &Config,
+        key_event: mpsc::Sender<KeyEvent>,
+        local: rpc::Local,
+    ) -> Self {
         let fingers = vec![None; cfg.num_bits as usize - 1];
         VirtualNode {
+            key_event,
             interval: cfg.update_interval,
             local,
             this,
@@ -152,6 +167,8 @@ impl VirtualNode {
     pub async fn add_key(&self, key: Key) {
         if !self.key_set.lock().await.insert(key) {
             warn!("key added to note was already present!")
+        } else {
+            self.key_event.send(KeyEvent::Added(key)).await.ok();
         }
     }
 
@@ -160,7 +177,9 @@ impl VirtualNode {
     }
 
     pub async fn transver_keys(&self, key: Vec<Key>) {
-        self.key_set.lock().await.append(key)
+        for k in key {
+            self.add_key(k).await;
+        }
     }
 
     pub async fn insert_finger(&self, finger: Finger) {
@@ -278,7 +297,11 @@ impl VirtualNode {
             let keys = self.key_set.lock().await.remove_not_in_range(&range);
             if !keys.is_empty() {
                 match rpc::transfer_keys(&x, keys.clone(), Some(&self.local)).await {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        for k in keys {
+                            self.key_event.send(KeyEvent::Removed(k)).await.ok();
+                        }
+                    }
                     Err(_) => {
                         self.table.lock().await.predecessor = None;
                         self.key_set.lock().await.append(keys);
@@ -350,6 +373,13 @@ impl VirtualNode {
             let random_interval = random_interval.mul_f32(rand::thread_rng().gen());
             time::sleep(random_interval).await;
             interval.tick().await;
+        }
+    }
+
+    pub async fn get_info(&self) -> rpc::NodeInfo {
+        let key_set = self.key_set.lock().await;
+        rpc::NodeInfo {
+            num_keys: key_set.len(),
         }
     }
 }
