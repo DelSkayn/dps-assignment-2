@@ -11,7 +11,9 @@ pub async fn kill_all(host: &str) -> Result<()> {
 
     for f in fingers {
         println!("quiting node at {}", f.addr);
-        chord::rpc::quit(&f.addr, None).await?;
+        if let Err(_) = chord::rpc::quit(&f.addr, None).await{
+            println!("Node already quit");
+        };
     }
     Ok(())
 }
