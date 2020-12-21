@@ -82,13 +82,14 @@ pub async fn lookup(
 
 async fn request(finger: chord::Finger, key: chord::Key) -> Result<RequestInfo> {
     let time = Instant::now();
-    let mut lookups = 0;
+    let mut lookups = 1;
     let mut closest = finger.clone();
     let mut succ = chord::rpc::successor(&closest, None).await?;
     while !key.within(&closest.id.to(succ.id)) {
-        lookups += 1;
         closest = chord::rpc::find_closest_predecessor(&closest, key, None).await?;
+        lookups += 1;
         let tmp = chord::rpc::successor(&closest, None).await?;
+        lookups += 1;
         if tmp.id == succ.id {
             break;
         }
