@@ -8,6 +8,7 @@ use structopt::StructOpt;
 extern crate log;
 
 mod keys;
+mod simulate;
 mod kill_all;
 mod lookup;
 mod start;
@@ -66,6 +67,34 @@ enum Opt {
         #[structopt(short = "p", long = "port")]
         port: Option<u16>,
     },
+    /// Start nodes on the given addesses, using the first address as the bootstrap address.
+    /// This command expects to have free ssh access to provided nodes as well as the rchord binary
+    /// to be reachable from PATH.
+    Simulate {
+        /// Address for the network nodes to run on.
+        nodes: Vec<String>,
+        /// The number of bits in the key (default 16)
+        #[structopt(short = "b", long = "bits")]
+        num_bits: Option<u8>,
+        /// The number of successors to keep track of (default 4)
+        #[structopt(short = "s", long = "successors")]
+        num_successors: Option<u32>,
+        /// The number of virtual nodes to run on a single node (default 4)
+        #[structopt(long = "nvirtuals")]
+        num_virtual_nodes: Option<u32>,
+        /// The time interval between the various update ticks performed by chord (default 2s)
+        #[structopt(short = "i", long = "interval", parse(try_from_str = parse_duration))]
+        update_interval: Option<Duration>,
+        /// port to run the chord protocol on (default 8080).
+        #[structopt(short = "p", long = "port")]
+        start_port: Option<u16>,
+        #[structopt(parse(try_from_str = parse_duration))]
+        drop_interval: Duration,
+        #[structopt(parse(try_from_str = parse_duration))]
+        lookup_interval: Duration,
+        #[structopt(parse(try_from_str = parse_duration))]
+        test_duration: Duration,
+    },
     /// Run a test on lookup performance
     Lookup {
         host: String,
@@ -115,6 +144,28 @@ async fn main() -> Result<()> {
             keys::keys(&host, key_amount).await?;
         }
         Opt::KillAll { host } => kill_all::kill_all(&host).await?,
+        Opt::Simulate {
+            nodes,
+            num_bits,
+            num_successors,
+            num_virtual_nodes,
+            update_interval,
+            start_port,
+            drop_interval,
+            lookup_interval,
+            test_duration
+        } => {
+            simulate::simulate(
+            nodes,
+            num_bits.unwrap_or(16),
+            num_successors.unwrap_or(4),
+            num_virtual_nodes.unwrap_or(4),
+            update_interval.unwrap_or(Duration::from_secs(2)),
+            start_port.unwrap_or(8083u16),
+            drop_interval,
+            lookup_interval,
+            test_duration).await?;
+        }
     }
     Ok(())
 }
