@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use chord::Finger;
 use humantime::parse_duration;
 use std::{collections::HashSet, net::SocketAddr, time::Duration};
@@ -8,8 +8,16 @@ use structopt::StructOpt;
 extern crate log;
 
 mod keys;
+mod kill_all;
 mod lookup;
 mod start;
+
+async fn resolve_host(host: &str) -> Result<SocketAddr> {
+    tokio::net::lookup_host(host)
+        .await?
+        .next()
+        .ok_or(anyhow!("failed to resolve initial node address"))
+}
 
 async fn aquire_nodes(host: SocketAddr, cfg: &chord::Config) -> Result<Vec<Finger>> {
     let mut finger = chord::Finger {
@@ -67,6 +75,8 @@ enum Opt {
     },
     /// Assign random keys to nodes and query to amount of keys in each node
     Keys { host: String, key_amount: usize },
+    /// Stop all the nodes in the network
+    KillAll { host: String },
 }
 
 #[tokio::main(worker_threads = 1)]
@@ -104,6 +114,7 @@ async fn main() -> Result<()> {
         Opt::Keys { host, key_amount } => {
             keys::keys(&host, key_amount).await?;
         }
+        Opt::KillAll { host } => kill_all::kill_all(&host).await?,
     }
     Ok(())
 }
