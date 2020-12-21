@@ -3,11 +3,13 @@ use anyhow::Result;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::VecDeque, future::Future, net::SocketAddr, result::Result as StdResult, sync::Arc,
+    time::Duration,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::{TcpListener, TcpStream},
     sync::{mpsc, oneshot, Mutex},
+    time,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -108,7 +110,12 @@ async fn call(addr: &SocketAddr, req: Request, local: Option<&Local>) -> Result<
         }
     }
     trace!("call: {:?}", req);
-    let stream = TcpStream::connect(addr).await?;
+    let stream =
+        if let Ok(x) = time::timeout(Duration::from_secs(1), TcpStream::connect(addr)).await {
+            x?
+        } else {
+            bail!("connection timeout!");
+        };
     let mut stream = BufStream::new(stream);
     send(&mut stream, &req).await?;
     Ok(recv(&mut stream).await?)
