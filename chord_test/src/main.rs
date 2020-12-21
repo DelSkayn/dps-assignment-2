@@ -8,9 +8,9 @@ use structopt::StructOpt;
 extern crate log;
 
 mod keys;
-mod simulate;
 mod kill_all;
 mod lookup;
+mod simulate;
 mod start;
 
 async fn resolve_host(host: &str) -> Result<SocketAddr> {
@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
     let env = env_logger::Env::new().filter_or("RUST_LOG", "info");
     env_logger::init_from_env(env);
     let opt = Opt::from_args();
+    debug!("opt: {:#?}", opt);
     match opt {
         Opt::Start {
             nodes,
@@ -153,18 +154,20 @@ async fn main() -> Result<()> {
             start_port,
             drop_interval,
             lookup_interval,
-            test_duration
+            test_duration,
         } => {
             simulate::simulate(
-            nodes,
-            num_bits.unwrap_or(16),
-            num_successors.unwrap_or(4),
-            num_virtual_nodes.unwrap_or(4),
-            update_interval.unwrap_or(Duration::from_secs(2)),
-            start_port.unwrap_or(8083u16),
-            drop_interval,
-            lookup_interval,
-            test_duration).await?;
+                nodes,
+                num_bits.unwrap_or(16),
+                num_successors.unwrap_or(4),
+                num_virtual_nodes.unwrap_or(4),
+                update_interval.unwrap_or(Duration::from_secs(2)),
+                start_port.unwrap_or(8083u16),
+                drop_interval,
+                lookup_interval,
+                test_duration,
+            )
+            .await?;
         }
     }
     Ok(())
