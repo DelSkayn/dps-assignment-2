@@ -58,7 +58,7 @@ pub async fn start(
     for n in nodes{
         info!("pinging {}",&n);
         let addr = net::lookup_host(format!("{}:{}",n,port)).await?.next().unwrap();
-        chord::rpc::ping(&addr).await.with_context(|| format!("failed to connect to '{}' node might not have started", n))?;
+        chord::rpc::ping(&addr,None).await.with_context(|| format!("failed to connect to '{}' node might not have started", n))?;
     }
 
     info!("finished, all nodes running");

@@ -1,12 +1,37 @@
 use anyhow::Result;
-use std::time::Duration;
-use structopt::StructOpt;
+use chord::Finger;
 use humantime::parse_duration;
+use std::{collections::HashSet, net::SocketAddr, time::Duration};
+use structopt::StructOpt;
 
 #[macro_use]
 extern crate log;
 
+mod keys;
+mod lookup;
 mod start;
+
+async fn aquire_nodes(host: SocketAddr, cfg: &chord::Config) -> Result<Vec<Finger>> {
+    let mut finger = chord::Finger {
+        addr: host.clone(),
+        id: chord::Key::new(&host, 0, cfg.num_bits),
+    };
+
+    let mut reached = HashSet::new();
+    reached.insert(finger.id);
+    let mut fingers = Vec::new();
+    info!("aquiring all nodes in the network, starting at {}", finger);
+    loop {
+        let successor = chord::rpc::successor(&finger, None).await?;
+        info!("found {}", successor);
+        finger = successor;
+        fingers.push(finger.clone());
+        if !reached.insert(finger.id) {
+            break;
+        }
+    }
+    Ok(fingers)
+}
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "rchord-test")]
@@ -14,7 +39,7 @@ enum Opt {
     /// Start nodes on the given addesses, using the first address as the bootstrap address.
     /// This command expects to have free ssh access to provided nodes as well as the rchord binary
     /// to be reachable from PATH.
-    Start{
+    Start {
         /// Address for the network nodes to run on.
         nodes: Vec<String>,
         /// The number of bits in the key (default 16)
@@ -32,17 +57,31 @@ enum Opt {
         /// port to run the chord protocol on (default 8080).
         #[structopt(short = "p", long = "port")]
         port: Option<u16>,
-    }
+    },
+    /// Run a test on lookup performance
+    Lookup {
+        host: String,
+        repeat: u64,
+        request_per_second: usize,
+        output: Option<String>,
+    },
+    /// Assign random keys to nodes and query to amount of keys in each node
+    Keys { host: String, key_amount: usize },
 }
 
-#[tokio::main(worker_threads=1)]
+#[tokio::main(worker_threads = 1)]
 async fn main() -> Result<()> {
-    let env = env_logger::Env::new().filter_or("RUST_LOG","info");
+    let env = env_logger::Env::new().filter_or("RUST_LOG", "info");
     env_logger::init_from_env(env);
     let opt = Opt::from_args();
-    match opt{
-        Opt::Start{
-            nodes, num_bits, num_successors, num_virtual_nodes, update_interval, port
+    match opt {
+        Opt::Start {
+            nodes,
+            num_bits,
+            num_successors,
+            num_virtual_nodes,
+            update_interval,
+            port,
         } => {
             start::start(
                 nodes,
@@ -50,8 +89,20 @@ async fn main() -> Result<()> {
                 num_successors.unwrap_or(4),
                 num_virtual_nodes.unwrap_or(4),
                 update_interval.unwrap_or(Duration::from_secs(2)),
-                port.unwrap_or(8080)
-                ).await?;
+                port.unwrap_or(8080),
+            )
+            .await?;
+        }
+        Opt::Lookup {
+            host,
+            repeat,
+            request_per_second,
+            output,
+        } => {
+            lookup::lookup(&host, repeat, request_per_second, output).await?;
+        }
+        Opt::Keys { host, key_amount } => {
+            keys::keys(&host, key_amount).await?;
         }
     }
     Ok(())

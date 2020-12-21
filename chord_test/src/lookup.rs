@@ -1,67 +1,101 @@
-use anyhow::{Context,Result};
-use tokio::net;
+use anyhow::{Context, Result};
+use rand::Rng;
+use std::time::{Duration, Instant};
+use tokio::{fs::File, io::AsyncWriteExt, net, time};
 
-pub async fn lookup(start: &str, repeat: u64, request_per_second: u64) -> Result<()>{
-    let addr = net::lookup_host(start).await.context("failed to lookup host")?;
+use crate::aquire_nodes;
 
-    let cfg = chord::rpc::config(&addr)
+#[derive(Debug)]
+struct RequestInfo {
+    time: Duration,
+    lookups: usize,
+}
+
+pub async fn lookup(
+    start: &str,
+    repeat: u64,
+    request_per_second: usize,
+    output: Option<String>,
+) -> Result<()> {
+    let addr = net::lookup_host(start)
+        .await
+        .context("failed to lookup host")?
+        .next()
+        .context("could not resolve host name")?;
+
+    let cfg = chord::rpc::config(&addr, None)
         .await
         .context("failed to retrieve network configuration from start node")?;
 
-    let finger = Finger{
-        addr: addr.clone(),
-        id: chord::Key::new(&addr,0,cfg.num_bits),
-    };
+    let fingers = aquire_nodes(addr, &cfg).await?;
 
-    let mut reached = HashSet::new();
-    reached.insert(finger.id);
-    let mut fingers = Vec::new();
-    info!("aquiring all nodes in the network, starting at {}", finger);
-    loop {
-        let successor = chord::rpc::successor(&finger).await?;
-        info!("found {}",successor);
-        finger = successor;
-        fingers.push(finger.clone());
-        if !reached.insert(finger.id) {
-            break;
+    let mut handle = Vec::new();
+    for i in 0..(repeat as usize) {
+        if i % request_per_second == request_per_second - 1 {
+            info!("did {} requests", i);
+            time::sleep(Duration::from_secs(1)).await;
+        }
+
+        let max_key = (2 << cfg.num_bits) as u128;
+        let key = rand::thread_rng().gen_range(0u128..max_key);
+        let key = chord::Key::from_number(key);
+        let finger = rand::thread_rng().gen_range(0..fingers.len());
+        let finger = fingers[finger].clone();
+        handle.push(tokio::spawn(request(finger, key)));
+    }
+
+    let mut time = Duration::from_secs(0);
+    let mut lookups = Vec::<usize>::new();
+    let mut times = 0usize;
+    let mut data = Vec::new();
+    for h in handle {
+        let x = h.await??;
+        times += 1;
+        time += x.time;
+        while lookups.len() < x.lookups + 1 {
+            lookups.push(0);
+        }
+        lookups[x.lookups] += 1;
+        data.push(x);
+    }
+
+    println!(
+        "average time: {}",
+        humantime::format_duration(time.div_f64(times as f64))
+    );
+    println!("lookups: num requests: times (total times {}): ", times);
+    for (i, l) in lookups.iter().enumerate() {
+        println!("{}: {}", i, l);
+    }
+
+    if let Some(x) = output {
+        println!("writing data to '{}'", x);
+        let mut file = File::create(x).await?;
+        for (i, r) in data.iter().enumerate() {
+            let buffer = format!("{},{},{}\n", i, r.lookups, r.time.as_nanos());
+            file.write_all(buffer.as_bytes()).await?;
         }
     }
 
+    Ok(())
 }
 
-pub async fn request(finger: &Finger, channel: ) -> Result<()>{
-        let succ = self.get_successor().await;
-        if key.within(&self.this.id.to(succ.id)) {
-            return Some(succ);
+async fn request(finger: chord::Finger, key: chord::Key) -> Result<RequestInfo> {
+    let time = Instant::now();
+    let mut lookups = 0;
+    let mut closest = finger.clone();
+    let mut succ = chord::rpc::successor(&closest, None).await?;
+    while !key.within(&closest.id.to(succ.id)) {
+        lookups += 1;
+        closest = chord::rpc::find_closest_predecessor(&closest, key, None).await?;
+        let tmp = chord::rpc::successor(&closest, None).await?;
+        if tmp.id == succ.id {
+            break;
         }
-        let mut closest = self.find_closest_predecessor(key).await;
-        let mut succ = match rpc::successor(&closest).await {
-            Ok(x) => x,
-            Err(_) => {
-                self.invalidate_node(succ.id).await;
-                return None;
-            }
-        };
-        while !key.within(&closest.id.to(succ.id)) {
-            closest = match rpc::find_closest_predecessor(&closest, key).await {
-                Ok(x) => x,
-                Err(_) => {
-                    self.invalidate_node(closest.id).await;
-                    return None;
-                }
-            };
-            let tmp = match rpc::successor(&closest).await {
-                Ok(x) => x,
-                Err(_) => {
-                    self.invalidate_node(closest.id).await;
-                    return None;
-                }
-            };
-            if tmp.id == succ.id {
-                return Some(succ);
-            }
-            succ = tmp
-        }
-        return Some(succ);
+        succ = tmp
+    }
+    Ok(RequestInfo {
+        time: Instant::now().duration_since(time),
+        lookups,
+    })
 }
-
