@@ -88,11 +88,11 @@ enum Opt {
         /// port to run the chord protocol on (default 8080).
         #[structopt(short = "p", long = "port")]
         start_port: Option<u16>,
-        #[structopt(parse(try_from_str = parse_duration))]
+        #[structopt(short = "r", long = "drop_interval", parse(try_from_str = parse_duration))]
         drop_interval: Duration,
-        #[structopt(parse(try_from_str = parse_duration))]
+        #[structopt(short = "l", long = "lookup_interval", parse(try_from_str = parse_duration))]
         lookup_interval: Duration,
-        #[structopt(parse(try_from_str = parse_duration))]
+        #[structopt(short = "d", long = "duration", parse(try_from_str = parse_duration))]
         test_duration: Duration,
     },
     /// Run a test on lookup performance
