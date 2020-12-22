@@ -1,7 +1,6 @@
-use anyhow::{anyhow, Result};
-use chord::Finger;
+use anyhow::Result;
 use humantime::parse_duration;
-use std::{collections::HashSet, net::SocketAddr, time::Duration};
+use std::time::Duration;
 use structopt::StructOpt;
 
 #[macro_use]
@@ -12,35 +11,7 @@ mod kill_all;
 mod lookup;
 mod simulate;
 mod start;
-
-async fn resolve_host(host: &str) -> Result<SocketAddr> {
-    tokio::net::lookup_host(host)
-        .await?
-        .next()
-        .ok_or(anyhow!("failed to resolve initial node address"))
-}
-
-async fn aquire_nodes(host: SocketAddr, cfg: &chord::Config) -> Result<Vec<Finger>> {
-    let mut finger = chord::Finger {
-        addr: host.clone(),
-        id: chord::Key::new(&host, 0, cfg.num_bits),
-    };
-
-    let mut reached = HashSet::new();
-    reached.insert(finger.id);
-    let mut fingers = Vec::new();
-    info!("aquiring all nodes in the network, starting at {}", finger);
-    loop {
-        let successor = chord::rpc::successor(&finger, None).await?;
-        info!("found {}", successor);
-        finger = successor;
-        fingers.push(finger.clone());
-        if !reached.insert(finger.id) {
-            break;
-        }
-    }
-    Ok(fingers)
-}
+mod util;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "rchord-test")]

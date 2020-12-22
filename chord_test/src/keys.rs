@@ -1,19 +1,14 @@
-use super::aquire_nodes;
-use anyhow::{anyhow, Context, Result};
+use super::util;
+use anyhow::{Context, Result};
 use rand::Rng;
-use tokio::net;
 
 pub async fn keys(host: &str, key_amount: usize) -> Result<()> {
-    let host = net::lookup_host(host)
-        .await?
-        .next()
-        .ok_or(anyhow!("failed to resolve initial node address"))?;
-
+    let host = util::resolve_host(host).await?;
     let cfg = chord::rpc::config(&host, None)
         .await
         .context("failed to retrieve network config")?;
 
-    let fingers = aquire_nodes(host, &cfg).await?;
+    let fingers = util::aquire_nodes(host, &cfg).await?;
 
     let mut handles = Vec::new();
     for _ in 0..key_amount {

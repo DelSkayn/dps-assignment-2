@@ -1,7 +1,8 @@
+use crate::util;
 use anyhow::{bail, Context, Result};
 use duct::cmd;
 use rand::Rng;
-use std::{future::Future, net::SocketAddr, str, sync::Arc, time::Duration, time::Instant};
+use std::{future::Future, str, sync::Arc, time::Duration, time::Instant};
 use tokio::{process, sync::Mutex, time};
 
 fn force_anotate(f: impl Future<Output = Result<()>>) -> impl Future<Output = Result<()>> {
@@ -57,15 +58,17 @@ pub async fn simulate(
                 lock[pick].1 += 1;
                 (res_pick, res_connect)
             };
-            let addr = crate::resolve_host(&format!("{}:{}", pick.0, pick.1)).await?;
+            let addr = util::resolve_host(&format!("{}:{}", pick.0, pick.1)).await?;
             info!("killing {:?}", pick);
             chord::rpc::quit(&addr, None).await?;
             pick.1 += 1;
 
             let command = format!(
-                "tmux new-session -d -s chord_{} \"{} connect {}:{} {}:{}\"",
-                pick.1, program, pick.0, pick.1, connect.0, connect.1
+                "nohup {} connect {}:{} {}:{} > /dev/null 2>&1 < /dev/null &",
+                program, pick.0, pick.1, connect.0, connect.1
             );
+
+            dbg!(&command);
 
             process::Command::new("ssh")
                 .env("RUST_LOG", "trace")
@@ -83,17 +86,15 @@ pub async fn simulate(
     let mut failures = 0;
     let start = Instant::now();
     while start.elapsed() < test_duration {
-        let max_key = (2 << num_bits) as u128;
-        let key = rand::thread_rng().gen_range(0..max_key);
-        let key = chord::Key::from_number(key);
+        let key = util::random_key(num_bits);
         let node = {
             let lock = node_address.lock().await;
             let pick = rand::thread_rng().gen_range(0..lock.len());
             lock[pick].clone()
         };
-        let addr = crate::resolve_host(&format!("{}:{}", node.0, node.1)).await?;
+        let addr = util::resolve_host(&format!("{}:{}", node.0, node.1)).await?;
         let virtual_id = rand::thread_rng().gen_range(0..num_virtual_nodes);
-        let finger = create_finger(addr, virtual_id, num_bits);
+        let finger = util::create_finger(addr, virtual_id, num_bits);
         trace!("looking for key {} in {}", key, finger);
         if let Err(_) = chord::rpc::find_successor(&finger, key, None).await {
             failures += 1;
@@ -103,9 +104,4 @@ pub async fn simulate(
     }
     println!("did {} request of which {} failed", num_requests, failures);
     Ok(())
-}
-
-fn create_finger(addr: SocketAddr, virtual_id: u32, num_bits: u8) -> chord::Finger {
-    let key = chord::Key::new(&addr, virtual_id, num_bits);
-    chord::Finger { addr, id: key }
 }

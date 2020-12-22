@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use rand::Rng;
 use std::time::{Duration, Instant};
-use tokio::{fs::File, io::AsyncWriteExt, net, time};
+use tokio::{fs::File, io::AsyncWriteExt, time};
 
-use crate::aquire_nodes;
+use crate::util;
 
 #[derive(Debug)]
 struct RequestInfo {
@@ -17,17 +17,13 @@ pub async fn lookup(
     request_per_second: usize,
     output: Option<String>,
 ) -> Result<()> {
-    let addr = net::lookup_host(start)
-        .await
-        .context("failed to lookup host")?
-        .next()
-        .context("could not resolve host name")?;
+    let addr = util::resolve_host(start).await?;
 
     let cfg = chord::rpc::config(&addr, None)
         .await
         .context("failed to retrieve network configuration from start node")?;
 
-    let fingers = aquire_nodes(addr, &cfg).await?;
+    let fingers = util::aquire_nodes(addr, &cfg).await?;
 
     let mut handle = Vec::new();
     for i in 0..(repeat as usize) {
@@ -36,9 +32,7 @@ pub async fn lookup(
             time::sleep(Duration::from_secs(1)).await;
         }
 
-        let max_key = (2 << cfg.num_bits) as u128;
-        let key = rand::thread_rng().gen_range(0u128..max_key);
-        let key = chord::Key::from_number(key);
+        let key = util::random_key(cfg.num_bits);
         let finger = rand::thread_rng().gen_range(0..fingers.len());
         let finger = fingers[finger].clone();
         handle.push(tokio::spawn(request(finger, key)));
