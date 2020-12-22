@@ -1,7 +1,7 @@
 use crate::util;
 use anyhow::{bail, Context, Result};
 use duct::cmd;
-use rand::{seq::SliceRandom, Rng};
+use rand::{Rng};
 use std::{future::Future, str, sync::Arc, time::Duration, time::Instant};
 use tokio::{process, sync::Mutex, time};
 
@@ -46,22 +46,13 @@ pub async fn simulate(
         let node_address = node_address_clone;
         let mut interval = time::interval(drop_interval);
         let len = node_address.lock().await.len();
-        let mut picks: Vec<_> = (0..len).collect();
-        picks.shuffle(&mut rand::thread_rng());
-
         loop {
             interval.tick().await;
             let (mut pick, connect) = {
-                let pick = if let Some(x) = picks.pop() {
-                    x
-                } else {
-                    picks = (0..len).collect();
-                    picks.shuffle(&mut rand::thread_rng());
-                    picks.pop().unwrap()
-                };
-                let mut connect = pick;
-                while connect == pick {
-                    connect = rand::thread_rng().gen_range(0..len);
+                let pick = rand::thread_rng().gen_range(0..len);
+                let mut connect = rand::thread_rng().gen_range(0..len-1);
+                if connect == pick{
+                    connect += 1
                 }
                 let mut lock = node_address.lock().await;
                 let res_pick = lock[pick].clone();
@@ -107,10 +98,14 @@ pub async fn simulate(
         let virtual_id = rand::thread_rng().gen_range(0..num_virtual_nodes);
         let finger = util::create_finger(addr, virtual_id, num_bits);
         trace!("looking for key {} in {}", key, finger);
-        if let Err(_) = chord::rpc::find_successor(&finger, key, None).await {
-            failures += 1;
+        match chord::rpc::find_successor(&finger, key, None).await {
+            Ok(Some(_)) => {num_requests += 1;}
+            Ok(None) => {
+                failures += 1;
+                num_requests += 1;
+            }
+            _ => {},
         }
-        num_requests += 1;
         time::sleep(lookup_interval).await;
     }
     println!("did {} request of which {} failed", num_requests, failures);
