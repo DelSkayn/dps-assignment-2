@@ -40,18 +40,16 @@ pub async fn start(
     info!("starting bootstrap node: {}", main_node);
 
     cmd!("ssh", &main_node, start_cmd)
-        .env("RUST_LOG", "trace")
         .run()
         .with_context(|| "failed to run bootstrap node start command")?;
 
     for n in iter {
         let command = format!(
-            "nohup {} {}:{} {}:{} > /dev/null 2>&1 < /dev/null &",
+            "nohup {} connect {}:{} {}:{} > /dev/null 2>&1 < /dev/null &",
             program, &n, port, main_node, port
         );
         info!("starting node: {}", n);
         cmd!("ssh", &n, command)
-            .env("RUST_LOG", "trace")
             .run()
             .with_context(|| format!("failed to run node start command on '{}'", n))?;
     }
