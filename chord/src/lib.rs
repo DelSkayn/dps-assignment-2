@@ -71,6 +71,7 @@ impl Chord {
         let config = rpc::config(&bootstrap, None).await?;
         loop {
             if let Some(chord) = Self::initialize_bootstrap(&config, host, bootstrap).await? {
+                info!("connected!");
                 return Ok(chord);
             }
             info!("could not find successor, waiting for network to stabilize");

@@ -55,7 +55,7 @@ pub async fn simulate(
                 let pick = if let Some(x) = picks.pop() {
                     x
                 } else {
-                    let mut picks: Vec<_> = (0..len).collect();
+                    picks = (0..len).collect();
                     picks.shuffle(&mut rand::thread_rng());
                     picks.pop().unwrap()
                 };
@@ -73,11 +73,13 @@ pub async fn simulate(
             info!("killing {:?}", pick);
             chord::rpc::quit(&addr, None).await?;
             pick.1 += 1;
+            interval.tick().await;
 
             let command = format!(
                 "nohup {} connect {}:{} {}:{} > /dev/null 2>&1 < /dev/null &",
                 program, pick.0, pick.1, connect.0, connect.1
             );
+            info!("starting node on {:?}",pick);
 
             dbg!(&command);
 
