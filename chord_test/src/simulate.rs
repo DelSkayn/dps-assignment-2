@@ -1,7 +1,7 @@
 use crate::util;
 use anyhow::{bail, Context, Result};
 use duct::cmd;
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 use std::{future::Future, str, sync::Arc, time::Duration, time::Instant};
 use tokio::{process, sync::Mutex, time};
 
@@ -45,15 +45,25 @@ pub async fn simulate(
     tokio::spawn(force_anotate(async move {
         let node_address = node_address_clone;
         let mut interval = time::interval(drop_interval);
+        let len = node_address.lock().await.len();
+        let mut picks: Vec<_> = (0..len).collect();
+        picks.shuffle(&mut rand::thread_rng());
+
         loop {
             interval.tick().await;
             let (mut pick, connect) = {
-                let mut lock = node_address.lock().await;
-                let pick = rand::thread_rng().gen_range(0..lock.len());
+                let pick = if let Some(x) = picks.pop() {
+                    x
+                } else {
+                    let mut picks: Vec<_> = (0..len).collect();
+                    picks.shuffle(&mut rand::thread_rng());
+                    picks.pop().unwrap()
+                };
                 let mut connect = pick;
                 while connect == pick {
-                    connect = rand::thread_rng().gen_range(0..lock.len());
+                    connect = rand::thread_rng().gen_range(0..len);
                 }
+                let mut lock = node_address.lock().await;
                 let res_pick = lock[pick].clone();
                 let res_connect = lock[connect].clone();
                 lock[pick].1 += 1;
@@ -78,10 +88,6 @@ pub async fn simulate(
                 .arg(command)
                 .status()
                 .await?;
-
-            let addr = util::resolve_host(&format!("{}:{}", pick.0, pick.1)).await?;
-            trace!("pinging {}", addr);
-            chord::rpc::ping(&addr, None).await?;
         }
     }));
 
