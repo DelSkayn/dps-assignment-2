@@ -6,6 +6,7 @@ use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::TcpSocket,
     sync::{mpsc, oneshot, Mutex},
+    time,
 };
 
 #[macro_use]
@@ -68,7 +69,13 @@ impl Chord {
 
         info!("connecting to {}", bootstrap);
         let config = rpc::config(&bootstrap, None).await?;
-        Self::initialize_bootstrap(config, host, bootstrap).await
+        loop {
+            if let Some(chord) = Self::initialize_bootstrap(&config, host, bootstrap).await? {
+                return Ok(chord);
+            }
+            info!("could not find successor, waiting for network to stabilize");
+            time::sleep(config.update_interval).await;
+        }
     }
 
     pub async fn start(host: &str, cfg: Config) -> Result<Chord> {
@@ -120,10 +127,10 @@ impl Chord {
     }
 
     async fn initialize_bootstrap(
-        cfg: Config,
+        cfg: &Config,
         host: SocketAddr,
         bootstrap: SocketAddr,
-    ) -> Result<Chord> {
+    ) -> Result<Option<Chord>> {
         let server = rpc::Server::new(host);
         let (key_send, key_recv) = mpsc::channel((cfg.num_virtual_nodes * 8) as usize);
         let cfg_borrow = &cfg;
@@ -150,22 +157,22 @@ impl Chord {
                     server.local(),
                 ));
             } else {
-                bail!("could not find successor!")
+                return Ok(None);
             }
         }
         let (sender, recv) = oneshot::channel();
         let inner = Inner {
             quit: Mutex::new(Some(sender)),
-            cfg,
+            cfg: cfg.clone(),
             resolved_host: host,
             virtual_nodes,
             rpc: server,
         };
-        Ok(Chord {
+        Ok(Some(Chord {
             key_channel: key_recv,
             quit: recv,
             inner: Arc::new(inner),
-        })
+        }))
     }
 
     pub async fn start_loop<F, R>(self, f: F) -> Result<()>
