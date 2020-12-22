@@ -39,7 +39,7 @@ pub async fn start(
 
     info!("starting bootstrap node: {}", main_node);
 
-    cmd!("ssh", &main_node, start_cmd)
+    cmd!("ssh", "-n", &main_node, start_cmd)
         .run()
         .with_context(|| "failed to run bootstrap node start command")?;
 
@@ -49,7 +49,7 @@ pub async fn start(
             program, &n, port, main_node, port
         );
         info!("starting node: {}", n);
-        cmd!("ssh", &n, command)
+        cmd!("ssh", "-n", &n, command)
             .run()
             .with_context(|| format!("failed to run node start command on '{}'", n))?;
     }

@@ -44,8 +44,9 @@ pub async fn simulate(
     let node_address_clone = node_address.clone();
     tokio::spawn(force_anotate(async move {
         let node_address = node_address_clone;
+        let mut interval = time::interval(drop_interval);
         loop {
-            time::sleep(drop_interval).await;
+            interval.tick().await;
             let (mut pick, connect) = {
                 let mut lock = node_address.lock().await;
                 let pick = rand::thread_rng().gen_range(0..lock.len());
@@ -72,11 +73,13 @@ pub async fn simulate(
 
             process::Command::new("ssh")
                 .env("RUST_LOG", "trace")
+                .arg("-n")
                 .arg(&pick.0)
                 .arg(command)
                 .status()
                 .await?;
 
+            let addr = util::resolve_host(&format!("{}:{}", pick.0, pick.1)).await?;
             trace!("pinging {}", addr);
             chord::rpc::ping(&addr, None).await?;
         }
