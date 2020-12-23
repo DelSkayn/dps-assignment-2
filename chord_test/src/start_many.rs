@@ -12,6 +12,7 @@ pub async fn start(
     port: u16,
     num_nodes: usize,
 ) -> Result<()> {
+    assert!(num_nodes > 1);
     let mut iter = nodes.iter();
     let main_node = if let Some(x) = iter.next() {
         x
@@ -49,7 +50,7 @@ pub async fn start(
     ports[0] += 1;
 
     let mut total_nodes = Vec::new();
-    for i in 0..num_nodes{
+    for i in 0..(num_nodes-1){
         let idx = (i + 1) % ports.len();
         let port = ports[idx];
         let addr = nodes[idx].clone();
