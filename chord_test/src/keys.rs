@@ -19,9 +19,8 @@ pub async fn keys(host: &str, key_amount: usize) -> Result<()> {
         node_keys.entry((f.addr,f.addr.port())).or_insert(0);
     }
     let mut handles = VecDeque::new();
-    eprintln!();
     for i in 0..key_amount {
-        eprintln!("\rloading key {}",i);
+        eprint!("\rloading key {}",i);
         let finger = rand::thread_rng().gen_range(0..fingers.len());
         let finger = fingers[finger].clone();
         let key = util::random_key(cfg.num_bits);
@@ -34,6 +33,7 @@ pub async fn keys(host: &str, key_amount: usize) -> Result<()> {
             *node_keys.entry((succ.addr,succ.addr.port())).or_insert(0) += 1;
         }
     }
+    eprintln!();
 
     for h in handles {
         let succ = h.await??;
