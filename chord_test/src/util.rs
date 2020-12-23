@@ -29,6 +29,7 @@ pub async fn aquire_nodes(host: SocketAddr, cfg: &chord::Config) -> Result<Vec<F
             break;
         }
     }
+    info!("found a total of {} nodes",fingers.len());
     Ok(fingers)
 }
 
