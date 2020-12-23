@@ -24,13 +24,18 @@ enum Opt {
     Query(query::Query),
     /// Run a chord node as the start of a network.
     Start {
+        /// The address to host the node on
         host: String,
+        /// The number of bits to use in the keys of this network. (default 16)
         #[structopt(short = "b", long = "bits")]
         num_bits: Option<u8>,
+        /// The number of successors each node should maintain (default 4)
         #[structopt(short = "s", long = "successors")]
         num_successors: Option<u32>,
+        /// The number of virtual nodes per full node (default 4)
         #[structopt(long = "nvirtuals")]
         num_virtual_nodes: Option<u32>,
+        /// The interval between stabilization requests done per node.
         #[structopt(short = "i", long = "interval", parse(try_from_str = parse_duration))]
         update_interval: Option<Duration>,
     },
@@ -40,15 +45,21 @@ enum Opt {
     Quit { host: String },
     /// Add a key into the network.
     Add {
+        /// The address of the node to use for the lookup
         host: String,
+        /// The value to add
         value: String,
+        /// Is the value a key or should it be hashed
         #[structopt(short = "k", long = "key")]
         is_key: bool,
     },
     /// Get a key from the network.
     Get {
+        /// The address of the node to use for the lookup
         host: String,
+        /// The value to add
         value: String,
+        /// Is the value a key or should it be hashed
         #[structopt(short = "k", long = "key")]
         is_key: bool,
     },
@@ -74,15 +85,19 @@ async fn main() -> Result<()> {
             };
             info!("starting");
             let c = chord::Chord::start(&host, cfg).await?;
-            return c.start_loop(|key| async move {
-                info!("key event: {:?}",key);
-            }).await;
+            return c
+                .start_loop(|key| async move {
+                    info!("key event: {:?}", key);
+                })
+                .await;
         }
         Opt::Connect { host, bootstrap } => {
             let c = chord::Chord::connect(&host, &bootstrap).await?;
-            return c.start_loop(|key| async move {
-                info!("key event: {:?}",key);
-            }).await;
+            return c
+                .start_loop(|key| async move {
+                    info!("key event: {:?}", key);
+                })
+                .await;
         }
         Opt::Query(x) => match query::query(&x).await {
             Ok(()) => {}

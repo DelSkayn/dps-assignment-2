@@ -5,20 +5,26 @@ use tokio::net;
 
 #[derive(Debug, StructOpt)]
 pub enum Query {
-    Key {
+    /// Does a lookup for the successor of a given key in the network.
+    Successor {
+        /// The address of the node to use for the lookup
         node: String,
+        /// Value to lookup the successor of.
         value: String,
+        /// Whether to hash the value or use it directly as a key value (default hash).
         #[structopt(short = "k", long = "key")]
         is_key: bool,
     },
+    /// Returns a list of all the nodes in the network.
     Nodes {
+        /// The address of the node to use for the lookup
         node: String,
     },
 }
 
 pub async fn query(query: &Query) -> Result<()> {
     let node = match query {
-        Query::Key { node, .. } => node,
+        Query::Successor { node, .. } => node,
         Query::Nodes { node } => node,
     };
 
@@ -38,7 +44,7 @@ pub async fn query(query: &Query) -> Result<()> {
     };
 
     match query {
-        Query::Key {
+        Query::Successor {
             ref value, is_key, ..
         } => {
             query_key(finger, value, *is_key, cfg.num_bits).await?;
