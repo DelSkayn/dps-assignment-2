@@ -111,7 +111,7 @@ async fn call(addr: &SocketAddr, req: Request, local: Option<&Local>) -> Result<
     }
     trace!("call: {:?}", req);
     let stream =
-        if let Ok(x) = time::timeout(Duration::from_secs(1), TcpStream::connect(addr)).await {
+        if let Ok(x) = time::timeout(Duration::from_secs(4), TcpStream::connect(addr)).await {
             x?
         } else {
             bail!("connection timeout!");
