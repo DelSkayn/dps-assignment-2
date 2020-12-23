@@ -34,7 +34,7 @@ pub async fn aquire_nodes(host: SocketAddr, cfg: &chord::Config) -> Result<Vec<F
 }
 
 pub fn random_key(num_bits: u8) -> chord::Key {
-    let max_key = (2 << num_bits) as u128;
+    let max_key = 2 << (num_bits as u128);
     let key = rand::thread_rng().gen_range(0..max_key);
     chord::Key::from_number(key)
 }
