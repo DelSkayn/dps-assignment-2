@@ -29,7 +29,7 @@ pub async fn keys(host: &str, key_amount: usize) -> Result<()> {
             let successor = chord::rpc::find_successor(&finger,key,None).await?;
             Result::<chord::Finger>::Ok(successor.unwrap())
         }));
-        while handles.len() > 64{
+        while handles.len() > 8{
             let succ = handles.pop_front().unwrap().await??;
             *node_keys.entry((succ.addr,succ.addr.port())).or_insert(0) += 1;
         }
